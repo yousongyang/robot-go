@@ -1,1 +1,1 @@
-package main
+package xres_code_generator
