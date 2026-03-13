@@ -26,9 +26,8 @@ var globalConfigManagerInst = ConfigManager{}
 
 func (configManagerInst *ConfigManager) GetLogger() *log.Logger {
 	if configManagerInst.logger == nil {
-		return nil
+		configManagerInst.logger = log.CreateDefaultLogger()
 	}
-
 	return configManagerInst.logger
 }
 
