@@ -49,6 +49,7 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 		err := robot_case.RunCaseFile(caseFile)
 		if err != nil {
 			fmt.Println("Run case file error:", err)
+			log.CloseAllLogWriters()
 			os.Exit(1)
 		}
 	} else {
