@@ -56,7 +56,8 @@ func (t *TaskActionCase) Log(format string, a ...any) {
 
 func init() {
 	var _ base.TaskActionImpl = &TaskActionCase{}
-	utils.RegisterCommand([]string{"run-case"}, CmdRunCase, "<case index> <case name> <openid-prefix> <user-count> <batch-count> <run-time> <args>", "运行用例", AutoCompleteCaseName, 0)
+	utils.RegisterCommand([]string{"run-case"}, CmdRunCase, "<case name> <openid-prefix> <user-count> <batch-count> <run-time> <args>", "运行用例", AutoCompleteCaseName, 0)
+	utils.RegisterCommand([]string{"run-case-file"}, CmdRunCaseFile, "<file> <repeated_time>", "运行用例文件", AutoCompleteCaseName, 0)
 }
 
 type CaseAction struct {
@@ -185,7 +186,7 @@ func RunCaseFile(caseFile string, repeatedTime int32) error {
 			currentCaseIndex := caseIndex
 			waitingChan := make(chan string, 1)
 			go func() {
-				waitingChan <- CmdRunCaseFile(nil, args, currentCaseIndex, beginTime)
+				waitingChan <- RunCase(nil, args, currentCaseIndex, beginTime)
 			}()
 			pendingCase = append(pendingCase, waitingChan)
 
@@ -213,7 +214,7 @@ func RunCaseFile(caseFile string, repeatedTime int32) error {
 	return nil
 }
 
-func CmdRunCaseFile(_ base.TaskActionImpl, cmd []string, caseIndex int32, beginTime time.Time) string {
+func RunCase(_ base.TaskActionImpl, cmd []string, caseIndex int32, beginTime time.Time) string {
 	if len(cmd) < 5 {
 		return "Args Error"
 	}
@@ -341,5 +342,17 @@ func CmdRunCaseFile(_ base.TaskActionImpl, cmd []string, caseIndex int32, beginT
 }
 
 func CmdRunCase(task base.TaskActionImpl, cmd []string) string {
-	return CmdRunCaseFile(task, cmd, 0, time.Now())
+	return RunCase(task, cmd, 0, time.Now())
+}
+
+func CmdRunCaseFile(task base.TaskActionImpl, cmd []string) string {
+	if len(cmd) < 2 {
+		return "Args Error"
+	}
+	repeatedTime, err := strconv.ParseInt(cmd[1], 10, 32)
+	if err != nil {
+		return err.Error()
+	}
+
+	return RunCaseFile(cmd[0], int32(repeatedTime)).Error()
 }
