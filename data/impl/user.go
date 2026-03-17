@@ -340,6 +340,7 @@ func (user *User) SendReq(action *user_data.TaskActionUser, csMsg proto.Message,
 			WaitingId:   sequence,
 		}
 		action.AwaitData = awaitData
+		user.rpcAwaitTask.Store(sequence, action)
 	}
 
 	// Send an echo packet every second
@@ -350,12 +351,12 @@ func (user *User) SendReq(action *user_data.TaskActionUser, csMsg proto.Message,
 			if action.AwaitData.WaitingId == sequence && action.AwaitData.WaitingType == base.TaskActionAwaitTypeRPC {
 				action.AwaitData = base.TaskActionAwaitData{}
 			}
+			user.rpcAwaitTask.Delete(sequence)
 		}
 		return 0, nil, err
 	}
 
 	if needRsp {
-		user.rpcAwaitTask.Store(sequence, action)
 		resumeData := action.Yield(base.TaskActionAwaitData{
 			WaitingType: base.TaskActionAwaitTypeRPC,
 			WaitingId:   sequence,
