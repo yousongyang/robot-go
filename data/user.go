@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	conn "github.com/atframework/robot-go/conn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -53,20 +54,24 @@ type User interface {
 	SetExtralData(key string, value any)
 }
 
-var createUserFn func(openId string, socketUrl string, logHandler func(format string, a ...any), enableActorLog bool) User
+type CreateUserFuncType func(openId string, logHandler func(format string, a ...any),
+	enableActorLog bool, unpack UserReceiveUnpackFunc, createMsg UserReceiveCreateMessageFunc,
+	connectFn conn.NewConnectFunc) User
 
-func RegisterCreateUser(f func(openId string, socketUrl string, logHandler func(format string, a ...any),
-	enableActorLog bool, unpack UserReceiveUnpackFunc, createMsg UserReceiveCreateMessageFunc) User, unpack UserReceiveUnpackFunc, createMsg UserReceiveCreateMessageFunc) {
-	createUserFn = func(openId, socketUrl string, logHandler func(format string, a ...any), enableActorLog bool) User {
-		return f(openId, socketUrl, logHandler, enableActorLog, unpack, createMsg)
+var createUserFn func(openId string, logHandler func(format string, a ...any), enableActorLog bool, connectFn conn.NewConnectFunc) User
+
+func RegisterCreateUser(f CreateUserFuncType,
+	unpack UserReceiveUnpackFunc, createMsg UserReceiveCreateMessageFunc) {
+	createUserFn = func(openId string, logHandler func(format string, a ...any), enableActorLog bool, connectFn conn.NewConnectFunc) User {
+		return f(openId, logHandler, enableActorLog, unpack, createMsg, connectFn)
 	}
 }
 
-func CreateUser(openId string, socketUrl string, logHandler func(format string, a ...any), enableActorLog bool) User {
+func CreateUser(openId string, logHandler func(format string, a ...any), enableActorLog bool, connectFn conn.NewConnectFunc) User {
 	if createUserFn == nil {
 		return nil
 	}
-	return createUserFn(openId, socketUrl, logHandler, enableActorLog)
+	return createUserFn(openId, logHandler, enableActorLog, connectFn)
 }
 
 var userMapContainerLock sync.RWMutex

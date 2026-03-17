@@ -9,8 +9,8 @@ import (
 	log "github.com/atframework/atframe-utils-go/log"
 	pu "github.com/atframework/atframe-utils-go/proto_utility"
 	base "github.com/atframework/robot-go/base"
+	conn "github.com/atframework/robot-go/conn"
 	utils "github.com/atframework/robot-go/utils"
-	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -34,7 +34,7 @@ type User struct {
 	Closed            atomic.Bool
 
 	connectionSequence uint64
-	connection         *websocket.Conn
+	connection         conn.Connection
 	rpcAwaitTask       sync.Map
 
 	csLog *log.LogBufferedRotatingWriter
@@ -59,7 +59,7 @@ func init() {
 	var _ user_data.User = &User{}
 }
 
-func NewUser(openId string, conn *websocket.Conn, bufferWriter *log.LogBufferedRotatingWriter, logHandler func(format string, a ...any)) *User {
+func NewUser(openId string, c conn.Connection, bufferWriter *log.LogBufferedRotatingWriter, logHandler func(format string, a ...any)) *User {
 	var _ user_data.User = &User{}
 	ret := &User{
 		OpenId:                  openId,
@@ -67,7 +67,7 @@ func NewUser(openId string, conn *websocket.Conn, bufferWriter *log.LogBufferedR
 		ZoneId:                  1,
 		AccessToken:             fmt.Sprintf("access-token-for-%s", openId),
 		connectionSequence:      99,
-		connection:              conn,
+		connection:              c,
 		csLog:                   bufferWriter,
 		taskManager:             base.NewTaskActionManager(),
 		messageHandler:          make(map[string]func(*user_data.TaskActionUser, proto.Message, int32) error),
@@ -79,8 +79,8 @@ func NewUser(openId string, conn *websocket.Conn, bufferWriter *log.LogBufferedR
 	return ret
 }
 
-func CreateUser(openId string, socketUrl string, logHandler func(format string, a ...any),
-	enableActorLog bool, unpack user_data.UserReceiveUnpackFunc, createMsg user_data.UserReceiveCreateMessageFunc) user_data.User {
+func CreateUser(openId string, logHandler func(format string, a ...any),
+	enableActorLog bool, unpack user_data.UserReceiveUnpackFunc, createMsg user_data.UserReceiveCreateMessageFunc, connectFn conn.NewConnectFunc) user_data.User {
 	var bufferWriter *log.LogBufferedRotatingWriter
 	if enableActorLog {
 		bufferWriter, _ = log.NewLogBufferedRotatingWriter(nil,
@@ -93,13 +93,13 @@ func CreateUser(openId string, socketUrl string, logHandler func(format string, 
 			fmt.Fprintf(logBufferWriter, "%s %s", time.Now().Format("2006-01-02 15:04:05.000"), fmt.Sprintf(format, a...))
 		}
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(socketUrl, nil)
+	c, err := connectFn()
 	if err != nil {
-		logHandler("Error connecting to Websocket Server: %v", err)
+		logHandler("Error connecting to server: %v", err)
 		return nil
 	}
 
-	ret := NewUser(openId, conn, bufferWriter, logHandler)
+	ret := NewUser(openId, c, bufferWriter, logHandler)
 	go ret.ReceiveHandler(unpack, createMsg)
 
 	ret.Log("Create User: %s", openId)
@@ -186,9 +186,9 @@ func (user *User) ReceiveHandler(unpack user_data.UserReceiveUnpackFunc, createM
 		}, "ReceiveHandler Close")
 	}()
 	for {
-		_, bytes, err := user.connection.ReadMessage()
+		bytes, err := user.connection.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
+			if user.connection.IsUnexpectedCloseError(err) {
 				user.Log("Error in receive: %v", err)
 			}
 			return
@@ -317,7 +317,7 @@ func (user *User) SendReq(action *user_data.TaskActionUser, csMsg proto.Message,
 		return 0, nil, fmt.Errorf("no login")
 	}
 
-	if user.connection == nil {
+	if user.connection == nil || !user.connection.IsValid() {
 		return 0, nil, fmt.Errorf("connection not found")
 	}
 
@@ -343,8 +343,7 @@ func (user *User) SendReq(action *user_data.TaskActionUser, csMsg proto.Message,
 		user.rpcAwaitTask.Store(sequence, action)
 	}
 
-	// Send an echo packet every second
-	err := user.connection.WriteMessage(websocket.BinaryMessage, csBin)
+	err := user.connection.WriteMessage(csBin)
 	if err != nil {
 		user.Log("Error during writing to websocket: %v", err)
 		if needRsp {
@@ -376,10 +375,9 @@ func (user *User) Close() {
 			f(user)
 		}
 		if user.connection != nil {
-			// Close our websocket connection
-			err := user.connection.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			err := user.connection.Close()
 			if err != nil {
-				user.Log("Error during closing websocket: %v", err)
+				user.Log("Error during closing connection: %v", err)
 				return
 			}
 		}
