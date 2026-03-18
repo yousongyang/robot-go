@@ -2,10 +2,10 @@ package atsf4g_go_robot_protocol_base
 
 import conn "github.com/atframework/robot-go/conn"
 
-var SocketUrl string
+var Url string
 
 // ConnectFunc, when set, is used by CmdCreateUser and other connection
-// creation points instead of the default conn.DialWebSocket(SocketUrl).
+// creation points instead of the default conn.DialWebSocket(Url).
 var ConnectFunc conn.NewConnectFunc = func() (conn.Connection, error) {
-	return conn.DialWebSocket(SocketUrl)
+	return conn.DialWebSocket(Url)
 }

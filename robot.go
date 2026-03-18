@@ -19,7 +19,7 @@ import (
 func NewRobotFlagSet() *flag.FlagSet {
 	flagSet := flag.NewFlagSet(
 		fmt.Sprintf("%s [options...]", filepath.Base(os.Args[0])), flag.ContinueOnError)
-	flagSet.String("url", "ws://localhost:7001/ws/v1", "server socket url")
+	flagSet.String("url", "ws://localhost:7001/ws/v1", "server url")
 	flagSet.Bool("h", false, "show help")
 	flagSet.Bool("help", false, "show help")
 
@@ -43,8 +43,8 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 
 	user_interface.RegisterCreateUser(user_impl.CreateUser, unpack, createMsg)
 
-	base.SocketUrl = flagSet.Lookup("url").Value.String()
-	fmt.Println("URL:", base.SocketUrl)
+	base.Url = flagSet.Lookup("url").Value.String()
+	fmt.Println("URL:", base.Url)
 
 	caseFile := flagSet.Lookup("case_file").Value.String()
 	if caseFile != "" {
