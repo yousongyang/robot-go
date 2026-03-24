@@ -111,3 +111,10 @@ func UserContainerGetUser(openId string) User {
 	}
 	return v
 }
+
+// OnlineUserCount 返回当前在线用户数（注册到 MetricsCollector 用）
+func OnlineUserCount() int {
+	userMapContainerLock.RLock()
+	defer userMapContainerLock.RUnlock()
+	return len(userMapContainer)
+}

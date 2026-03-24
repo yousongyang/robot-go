@@ -1,0 +1,9 @@
+# robot-master 默认配置
+# 可通过命令行参数覆盖，如: ./robot-master -listen :9090 -redis-addr 10.0.0.1:6379
+
+listen: ":8080"
+redis-addr: "localhost:6379"
+redis-pwd: ""
+redis-db: 0
+report-dir: "./report"
+# report-expiry: 168h   # 报告自动过期时间（7天）；删除时同步清理 Redis 数据和本地文件；留空则永不过期
