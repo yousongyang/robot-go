@@ -19,7 +19,7 @@ import (
 
 // distributeAndWait 解析 case 文件、按行分发给 Agent 并等待全部完成。
 // targetGroup 为空时分发给所有在线 Agent；distributeMode 为 "copy" 或 "balance"。
-func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup, distributeMode string) error {
+func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string) error {
 	// 解析 case 文件
 	isStress, lines := parseCaseContent(caseFileContent)
 	if !isStress {
@@ -39,7 +39,7 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 			}
 
 			caseIndex := round*len(lines) + i
-			if err := m.distributeSingleCase(ctx, reportID, caseIndex, params, targetGroup, distributeMode); err != nil {
+			if err := m.distributeSingleCase(ctx, reportID, caseIndex, params, targetGroup, targetAgents, distributeMode); err != nil {
 				if params.ErrorBreak {
 					return fmt.Errorf("case[%d] %s: %w", caseIndex, params.CaseName, err)
 				}
@@ -55,17 +55,33 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 // distributeSingleCase 将一个 case 分发给各 agent 并等待完成。
 // distributeMode="copy": 每个 Agent 跑全量 OpenID 与 QPS（完全复制）
 // distributeMode="balance": 拆分 ID 范围与 QPS（负载均衡，默认）
-func (m *Master) distributeSingleCase(ctx context.Context, reportID string, caseIndex int, params robot_case.StressParams, targetGroup, distributeMode string) error {
+func (m *Master) distributeSingleCase(ctx context.Context, reportID string, caseIndex int, params robot_case.StressParams, targetGroup string, targetAgents []string, distributeMode string) error {
+	// 构建 targetAgents 的快速查找集合
+	agentSet := make(map[string]struct{}, len(targetAgents))
+	for _, id := range targetAgents {
+		agentSet[id] = struct{}{}
+	}
+
 	m.mu.RLock()
 	agents := make([]*agentInfo, 0, len(m.agents))
 	for _, a := range m.agents {
-		if a.Status == "online" && (targetGroup == "" || a.GroupID == targetGroup) {
+		if a.Status != "online" {
+			continue
+		}
+		if len(agentSet) > 0 {
+			if _, ok := agentSet[a.ID]; ok {
+				agents = append(agents, a)
+			}
+		} else if targetGroup == "" || a.GroupID == targetGroup {
 			agents = append(agents, a)
 		}
 	}
 	m.mu.RUnlock()
 
 	if len(agents) == 0 {
+		if len(agentSet) > 0 {
+			return fmt.Errorf("no online agents matching the specified agent IDs")
+		}
 		if targetGroup != "" {
 			return fmt.Errorf("no online agents in group %q", targetGroup)
 		}

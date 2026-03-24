@@ -49,6 +49,9 @@ cursor:pointer;font-size:14px;border-bottom:2px solid transparent;transition:.2s
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:10px 20px;border-bottom:1px solid var(--border);font-size:13px}
 th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--fg)}
+.sort-arrow{font-size:10px;margin-left:3px;color:var(--accent)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--hover)}
 
@@ -113,6 +116,35 @@ box-shadow:0 4px 12px rgba(0,0,0,.4)}
 .empty{text-align:center;padding:48px;color:var(--muted)}
 .empty .icon{font-size:48px;margin-bottom:12px}
 
+/* Target selector */
+.target-mode-toggle{display:flex;gap:0;margin-bottom:10px;border:1px solid var(--border);border-radius:6px;overflow:hidden;width:fit-content}
+.target-mode-toggle button{background:none;border:none;color:var(--muted);padding:6px 16px;cursor:pointer;font-size:12px;font-weight:500;transition:.15s}
+.target-mode-toggle button.active{background:var(--accent);color:#fff}
+.multi-select-wrap{position:relative}
+.multi-select-box{min-height:38px;background:var(--bg);border:1px solid var(--border);border-radius:6px;
+padding:4px 8px;cursor:pointer;display:flex;flex-wrap:wrap;gap:4px;align-items:center;user-select:none}
+.multi-select-box:focus-within{border-color:var(--accent)}
+.ms-tag{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;
+border-radius:4px;padding:2px 8px;font-size:12px}
+.ms-tag .rm{cursor:pointer;opacity:.8;font-size:10px}
+.ms-tag .rm:hover{opacity:1}
+.ms-placeholder{color:var(--muted);font-size:13px;padding:2px 4px}
+.ms-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;
+background:var(--card);border:1px solid var(--border);border-radius:6px;
+max-height:220px;overflow-y:auto;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.ms-dropdown.open{display:block}
+.ms-option{padding:8px 14px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.ms-option:hover{background:var(--hover)}
+.ms-option.selected{color:var(--accent)}
+.ms-option .chk{width:14px;height:14px;border:1px solid var(--border);border-radius:3px;
+display:inline-block;flex-shrink:0;position:relative}
+.ms-option.selected .chk::after{content:'✓';position:absolute;top:-2px;left:1px;
+font-size:11px;color:var(--accent)}
+.ms-search{padding:6px 10px;border-bottom:1px solid var(--border)}
+.ms-search input{width:100%;background:var(--bg);border:1px solid var(--border);
+border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
+.ms-search input:focus{outline:none;border-color:var(--accent)}
+
 /* Responsive */
 @media(max-width:768px){
 .form-row{grid-template-columns:1fr}
@@ -167,7 +199,12 @@ box-shadow:0 4px 12px rgba(0,0,0,.4)}
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Agent ID</th><th>Group</th><th>Status</th><th>Last Seen</th></tr></thead>
+      <thead><tr>
+        <th class="sortable" onclick="sortAgents('id')">Agent ID <span id="sort-id" class="sort-arrow">&#x25B2;</span></th>
+        <th class="sortable" onclick="sortAgents('group_id')">Group <span id="sort-group_id" class="sort-arrow"></span></th>
+        <th class="sortable" onclick="sortAgents('status')">Status <span id="sort-status" class="sort-arrow"></span></th>
+        <th class="sortable" onclick="sortAgents('last_seen')">Last Seen <span id="sort-last_seen" class="sort-arrow"></span></th>
+      </tr></thead>
       <tbody id="agents-body"></tbody>
     </table>
   </div>
@@ -201,9 +238,37 @@ login_bench false       test_   1      1001 50     50   60">#!stress
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label>Target Group (empty = all agents)</label>
-        <input id="taskTargetGroup" type="text" placeholder="e.g. group-a">
-        <div class="form-hint">Only agents in this group will receive tasks. Leave empty to use all online agents.</div>
+        <label>Target Selection</label>
+        <div class="target-mode-toggle">
+          <button id="modeGroupBtn" class="active" onclick="setTargetMode('group')">&#x1F4E6; Group Mode</button>
+          <button id="modeAgentBtn" onclick="setTargetMode('agent')">&#x1F916; Agent Mode</button>
+        </div>
+        <!-- Group Mode -->
+        <div id="targetGroupPanel">
+          <div class="multi-select-wrap" id="groupSelectWrap">
+            <div class="multi-select-box" id="groupSelectBox" onclick="toggleDropdown('group')">
+              <span class="ms-placeholder" id="groupPlaceholder">All agents (no filter)</span>
+            </div>
+            <div class="ms-dropdown" id="groupDropdown">
+              <div class="ms-search"><input type="text" placeholder="Search groups..." oninput="filterDropdown('group',this.value)" id="groupSearchInput"></div>
+              <div id="groupOptionList"></div>
+            </div>
+          </div>
+          <div class="form-hint">Select one or more groups. Leave empty to use all online agents.</div>
+        </div>
+        <!-- Agent Mode -->
+        <div id="targetAgentPanel" style="display:none">
+          <div class="multi-select-wrap" id="agentSelectWrap">
+            <div class="multi-select-box" id="agentSelectBox" onclick="toggleDropdown('agent')">
+              <span class="ms-placeholder" id="agentPlaceholder">Select specific agents...</span>
+            </div>
+            <div class="ms-dropdown" id="agentDropdown">
+              <div class="ms-search"><input type="text" placeholder="Search agents..." oninput="filterDropdown('agent',this.value)" id="agentSearchInput"></div>
+              <div id="agentOptionList"></div>
+            </div>
+          </div>
+          <div class="form-hint">Select one or more specific agents to run the task.</div>
+        </div>
       </div>
       <div class="form-group">
         <label>Distribute Mode</label>
@@ -374,7 +439,8 @@ async function loadOverview() {
     const taskList = tasks || [];
     taskList.forEach(t => { tasksData[t.report_id] = t; });
 
-    document.getElementById('ov-agents').textContent = agentsData.length;
+    const onlineAgents = agentsData.filter(a => isOnline(a.last_seen) && a.status === 'online');
+    document.getElementById('ov-agents').textContent = onlineAgents.length;
     const running = taskList.filter(t => t.status === 'running').length;
     const done = taskList.filter(t => t.status === 'done').length;
     const err = taskList.filter(t => t.status === 'error' || t.status === 'stopped').length;
@@ -389,7 +455,7 @@ async function loadOverview() {
     ).join('');
 
     document.getElementById('connStatus').textContent =
-      agentsData.length + ' agent(s) | ' + taskList.length + ' task(s)';
+      onlineAgents.length + ' online / ' + agentsData.length + ' agent(s) | ' + taskList.length + ' task(s)';
 
   } catch (e) {
     document.getElementById('connStatus').textContent = 'Error: ' + e.message;
@@ -397,26 +463,66 @@ async function loadOverview() {
 }
 
 // ---------- Agents ----------
+let agentsSort = { col: 'id', asc: true };
+
+function sortAgents(col) {
+  if (agentsSort.col === col) {
+    agentsSort.asc = !agentsSort.asc;
+  } else {
+    agentsSort.col = col;
+    agentsSort.asc = true;
+  }
+  renderAgentsTable();
+}
+
+function renderAgentsTable() {
+  const tbody = document.getElementById('agents-body');
+  const empty = document.getElementById('agents-empty');
+  if (!agentsData || agentsData.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  // Update sort arrow indicators
+  ['id', 'group_id', 'status', 'last_seen'].forEach(c => {
+    const el = document.getElementById('sort-' + c);
+    if (!el) return;
+    if (c === agentsSort.col) {
+      el.innerHTML = agentsSort.asc ? '&#x25B2;' : '&#x25BC;';
+    } else {
+      el.innerHTML = '';
+    }
+  });
+  const sorted = [...agentsData].sort((a, b) => {
+    let va = a[agentsSort.col] || '';
+    let vb = b[agentsSort.col] || '';
+    if (agentsSort.col === 'last_seen') {
+      va = va ? new Date(va).getTime() : 0;
+      vb = vb ? new Date(vb).getTime() : 0;
+    } else {
+      va = String(va).toLowerCase();
+      vb = String(vb).toLowerCase();
+    }
+    if (va < vb) return agentsSort.asc ? -1 : 1;
+    if (va > vb) return agentsSort.asc ? 1 : -1;
+    return 0;
+  });
+  tbody.innerHTML = sorted.map(a => {
+    const ago = timeSince(a.last_seen);
+    const online = a.status === 'online';
+    return '<tr><td><strong>' + escapeHtml(a.id) + '</strong></td>' +
+      '<td>' + escapeHtml(a.group_id || '-') + '</td>' +
+      '<td>' + statusBadge(online ? 'online' : 'offline') + '</td>' +
+      '<td style="color:var(--muted);font-size:12px">' + ago + '</td></tr>';
+  }).join('');
+}
+
 async function loadAgents() {
   try {
     const agents = await api('GET', '/api/agents');
     agentsData = agents || [];
-    const tbody = document.getElementById('agents-body');
-    const empty = document.getElementById('agents-empty');
-    if (agentsData.length === 0) {
-      tbody.innerHTML = '';
-      empty.style.display = 'block';
-      return;
-    }
-    empty.style.display = 'none';
-    tbody.innerHTML = agentsData.map(a => {
-      const ago = timeSince(a.last_seen);
-      const online = isOnline(a.last_seen);
-      return '<tr><td><strong>' + escapeHtml(a.id) + '</strong></td>' +
-        '<td>' + escapeHtml(a.group_id || '-') + '</td>' +
-        '<td>' + statusBadge(online ? 'online' : 'offline') + '</td>' +
-        '<td style="color:var(--muted);font-size:12px">' + ago + '</td></tr>';
-    }).join('');
+    renderAgentsTable();
   } catch (e) { toast('Load agents failed: ' + e.message, 'error'); }
 }
 
@@ -450,13 +556,123 @@ function timeSince(t) {
   });
 })();
 
+// ---------- Target Multi-Select ----------
+let targetMode = 'group'; // 'group' or 'agent'
+let selectedGroups = [];
+let selectedAgents = [];
+
+function setTargetMode(mode) {
+  targetMode = mode;
+  document.getElementById('modeGroupBtn').classList.toggle('active', mode === 'group');
+  document.getElementById('modeAgentBtn').classList.toggle('active', mode === 'agent');
+  document.getElementById('targetGroupPanel').style.display = mode === 'group' ? '' : 'none';
+  document.getElementById('targetAgentPanel').style.display = mode === 'agent' ? '' : 'none';
+  if (mode === 'agent') populateAgentOptions();
+  else populateGroupOptions();
+}
+
+function populateGroupOptions() {
+  // 从已加载的 agentsData 中提取唯一 group
+  const groups = [...new Set(agentsData.map(a => a.group_id).filter(Boolean))];
+  renderOptions('group', groups.map(g => ({ id: g, label: g })));
+}
+
+function populateAgentOptions() {
+  renderOptions('agent', agentsData.map(a => ({
+    id: a.id,
+    label: a.id + (a.group_id ? ' [' + a.group_id + ']' : '') + (a.status === 'online' ? '' : ' (offline)')
+  })));
+}
+
+function renderOptions(type, items) {
+  const listEl = document.getElementById(type + 'OptionList');
+  if (!listEl) return;
+  const selected = type === 'group' ? selectedGroups : selectedAgents;
+  listEl.innerHTML = items.map(item => {
+    const sel = selected.includes(item.id);
+    return '<div class="ms-option' + (sel ? ' selected' : '') + '" data-id="' + escapeHtml(item.id) + '" onclick="toggleOption(\'' + type + '\',\'' + escapeHtml(item.id).replace(/'/g,"\\'") + '\')">'
+      + '<span class="chk"></span>' + escapeHtml(item.label) + '</div>';
+  }).join('');
+}
+
+function filterDropdown(type, query) {
+  const listEl = document.getElementById(type + 'OptionList');
+  if (!listEl) return;
+  const q = query.toLowerCase();
+  listEl.querySelectorAll('.ms-option').forEach(el => {
+    el.style.display = el.dataset.id.toLowerCase().includes(q) || el.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function toggleOption(type, id) {
+  const arr = type === 'group' ? selectedGroups : selectedAgents;
+  const idx = arr.indexOf(id);
+  if (idx === -1) arr.push(id); else arr.splice(idx, 1);
+  renderOptions(type, getAllOptions(type));
+  renderTags(type);
+}
+
+function getAllOptions(type) {
+  const listEl = document.getElementById(type + 'OptionList');
+  if (!listEl) return [];
+  return [...listEl.querySelectorAll('.ms-option')].map(el => ({ id: el.dataset.id, label: el.textContent.trim() }));
+}
+
+function renderTags(type) {
+  const box = document.getElementById(type + 'SelectBox');
+  const ph = document.getElementById(type + 'Placeholder');
+  const arr = type === 'group' ? selectedGroups : selectedAgents;
+  // 移除旧 tag
+  box.querySelectorAll('.ms-tag').forEach(t => t.remove());
+  if (arr.length === 0) {
+    ph.style.display = '';
+    ph.textContent = type === 'group' ? 'All agents (no filter)' : 'Select specific agents...';
+  } else {
+    ph.style.display = 'none';
+    arr.forEach(id => {
+      const tag = document.createElement('span');
+      tag.className = 'ms-tag';
+      tag.innerHTML = escapeHtml(id) + '<span class="rm" onclick="event.stopPropagation();removeOpt(\'' + type + '\',\'' + escapeHtml(id).replace(/'/g,"\\'") + '\')">✕</span>';
+      box.insertBefore(tag, ph);
+    });
+  }
+}
+
+function removeOpt(type, id) {
+  const arr = type === 'group' ? selectedGroups : selectedAgents;
+  const idx = arr.indexOf(id);
+  if (idx !== -1) arr.splice(idx, 1);
+  renderOptions(type, getAllOptions(type));
+  renderTags(type);
+}
+
+function toggleDropdown(type) {
+  const dd = document.getElementById(type + 'Dropdown');
+  const isOpen = dd.classList.contains('open');
+  // 关闭所有
+  document.querySelectorAll('.ms-dropdown.open').forEach(d => d.classList.remove('open'));
+  if (!isOpen) {
+    if (type === 'group') populateGroupOptions();
+    else populateAgentOptions();
+    dd.classList.add('open');
+    const inp = document.getElementById(type + 'SearchInput');
+    if (inp) { inp.value = ''; filterDropdown(type, ''); inp.focus(); }
+  }
+}
+
+// 点击外部关闭下拉
+document.addEventListener('click', e => {
+  if (!e.target.closest('.multi-select-wrap')) {
+    document.querySelectorAll('.ms-dropdown.open').forEach(d => d.classList.remove('open'));
+  }
+});
+
 // ---------- Submit Task ----------
 async function submitTask() {
   const content = document.getElementById('taskContent').value.trim();
   if (!content) { toast('Case file content is required', 'error'); return; }
   const reportId = document.getElementById('taskReportId').value.trim();
   const repeated = parseInt(document.getElementById('taskRepeated').value) || 1;
-  const targetGroup = document.getElementById('taskTargetGroup').value.trim();
   const distributeMode = document.getElementById('taskDistributeMode').value;
   const btn = document.getElementById('btnSubmit');
   btn.disabled = true;
@@ -464,7 +680,12 @@ async function submitTask() {
   try {
     const body = { case_file_content: content, repeated_time: repeated, distribute_mode: distributeMode };
     if (reportId) body.report_id = reportId;
-    if (targetGroup) body.target_group = targetGroup;
+    if (targetMode === 'agent') {
+      if (selectedAgents.length > 0) body.target_agents = selectedAgents.slice();
+    } else {
+      if (selectedGroups.length === 1) body.target_group = selectedGroups[0];
+      else if (selectedGroups.length > 1) body.target_agents_by_group = selectedGroups; // 将在后端扩展
+    }
     const result = await api('POST', '/api/tasks', body);
     toast('Task submitted: ' + result.report_id, 'success');
     document.getElementById('submitStatus').textContent = 'Submitted: ' + result.report_id;
@@ -567,8 +788,18 @@ function redoHistory(jsonStr) {
   document.getElementById('taskContent').value = h.case_file_content || '';
   document.getElementById('taskReportId').value = '';
   document.getElementById('taskRepeated').value = h.repeated_time || 1;
-  document.getElementById('taskTargetGroup').value = h.target_group || '';
   document.getElementById('taskDistributeMode').value = h.distribute_mode || 'balance';
+  // 还原 target 选择
+  if (h.target_agents && h.target_agents.length > 0) {
+    setTargetMode('agent');
+    selectedAgents = h.target_agents.slice();
+    populateAgentOptions();
+    renderTags('agent');
+  } else {
+    setTargetMode('group');
+    selectedGroups = h.target_group ? [h.target_group] : [];
+    renderTags('group');
+  }
   switchPage('submit');
   toast('Parameters loaded from history. Modify and submit.', 'info');
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	robot_case "github.com/atframework/robot-go/case"
@@ -53,22 +54,28 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 	}, nil
 }
 
-// Start 注册到 Master，然后进入长轮询循环（阻塞）
+// Start 注册到 Master，然后进入长轮询循环（阻塞）。
+// 每次 poll 连接建立即作为在线心跳，无需独立 heartbeatLoop。
 func (a *Agent) Start() error {
 	if err := a.registerToMaster(); err != nil {
-		log.Printf("[Agent] Warning: register to master failed: %v (will retry on heartbeat)", err)
+		log.Printf("[Agent] Warning: register to master failed: %v (will retry)", err)
 	}
-
-	go a.heartbeatLoop()
 
 	log.Printf("[Agent] %s started, Master=%s, Redis=%s", a.cfg.AgentID, a.cfg.MasterAddr, a.cfg.RedisAddr)
 	a.pollLoop()
 	return nil
 }
 
-// pollLoop 持续向 Master 拉取任务并执行（阻塞，永不返回）
+// pollLoop 持续向 Master 发起长轮询（阻塞，永不返回）。
+// 每次发起 poll 前重新注册，作为心跳与连接建立信号。
 func (a *Agent) pollLoop() {
 	for {
+		// 每轮 poll 前确保已注册，同时通知 Master 连接即将建立
+		if err := a.registerToMaster(); err != nil {
+			log.Printf("[Agent] register failed: %v, retry in 3s", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
 		task, err := a.pollTask()
 		if err != nil {
 			log.Printf("[Agent] poll error: %v, retry in 3s", err)
@@ -85,7 +92,7 @@ func (a *Agent) pollLoop() {
 
 // pollTask 向 Master 拉取一个任务；返回 nil,nil 表示 204 当前无任务
 func (a *Agent) pollTask() (*robot_case.AgentTask, error) {
-	u, _ := url.Parse(a.cfg.MasterAddr + "/api/agent/tasks/next")
+	u, _ := url.Parse(a.masterURL("/api/agent/tasks/next"))
 	q := u.Query()
 	q.Set("agent_id", a.cfg.AgentID)
 	u.RawQuery = q.Encode()
@@ -248,7 +255,7 @@ func (a *Agent) flushPartialData(reportID string, caseName string, tracer *repor
 
 // checkCancelled 向 Master 查询任务是否已被取消。
 func (a *Agent) checkCancelled(reportID string) bool {
-	u, _ := url.Parse(a.cfg.MasterAddr + "/api/agent/tasks/cancel")
+	u, _ := url.Parse(a.masterURL("/api/agent/tasks/cancel"))
 	q := u.Query()
 	q.Set("report_id", reportID)
 	u.RawQuery = q.Encode()
@@ -271,7 +278,7 @@ func (a *Agent) checkCancelled(reportID string) bool {
 // postResult 向 Master 上报任务结果
 func (a *Agent) postResult(result robot_case.AgentTaskResult) error {
 	body, _ := json.Marshal(result)
-	resp, err := a.client.Post(a.cfg.MasterAddr+"/api/agent/tasks/result", "application/json", bytes.NewReader(body))
+	resp, err := a.client.Post(a.masterURL("/api/agent/tasks/result"), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -282,7 +289,13 @@ func (a *Agent) postResult(result robot_case.AgentTaskResult) error {
 	return nil
 }
 
-// registerToMaster 向 Master 注册本 Agent（仅上报 ID 和组信息，无需监听地址）
+// masterURL 返回去掉末尾斜杠的 MasterAddr，避免拼接出双斜杠路径。
+func (a *Agent) masterURL(path string) string {
+	return strings.TrimRight(a.cfg.MasterAddr, "/") + path
+}
+
+// registerToMaster 向 Master 注册本 Agent（上报 ID 和组信息）。
+// pollLoop 每次建立新 poll 连接前都会调用，兼作在线心跳。
 func (a *Agent) registerToMaster() error {
 	if a.cfg.MasterAddr == "" {
 		return nil
@@ -292,7 +305,7 @@ func (a *Agent) registerToMaster() error {
 		payload["group_id"] = a.cfg.GroupID
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := a.client.Post(a.cfg.MasterAddr+"/api/agents/register", "application/json", bytes.NewReader(body))
+	resp, err := a.client.Post(a.masterURL("/api/agents/register"), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -300,15 +313,5 @@ func (a *Agent) registerToMaster() error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("master returned %d", resp.StatusCode)
 	}
-	log.Printf("[Agent] Registered to master: %s", a.cfg.MasterAddr)
 	return nil
-}
-
-// heartbeatLoop 每 10 秒重新注册一次以维持 last_seen 心跳
-func (a *Agent) heartbeatLoop() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		_ = a.registerToMaster()
-	}
 }

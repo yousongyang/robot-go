@@ -40,11 +40,12 @@ type agentInfo struct {
 
 // taskStatus 一次分布式任务的状态
 type taskStatus struct {
-	ReportID       string `json:"report_id"`
-	Status         string `json:"status"` // pending / running / done / error
-	Error          string `json:"error,omitempty"`
-	TargetGroup    string `json:"target_group,omitempty"`
-	DistributeMode string `json:"distribute_mode,omitempty"`
+	ReportID       string   `json:"report_id"`
+	Status         string   `json:"status"` // pending / running / done / error
+	Error          string   `json:"error,omitempty"`
+	TargetGroup    string   `json:"target_group,omitempty"`
+	TargetAgents   []string `json:"target_agents,omitempty"`
+	DistributeMode string   `json:"distribute_mode,omitempty"`
 }
 
 // Master 分布式压测调度端
@@ -119,6 +120,7 @@ func (m *Master) Start() error {
 	if m.cfg.ReportExpiry > 0 {
 		go m.startExpiryCleanup()
 	}
+	go m.startAgentCleanup()
 	log.Printf("[Master] Dashboard: http://localhost%s  Redis=%s  ReportDir=%s  Expiry=%s",
 		m.cfg.ListenAddr, m.cfg.RedisAddr, m.cfg.ReportDir, m.cfg.ReportExpiry)
 	return m.server.ListenAndServe()
@@ -173,11 +175,12 @@ func (m *Master) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 
 func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CaseFileContent string `json:"case_file_content"`
-		RepeatedTime    int    `json:"repeated_time"`
-		ReportID        string `json:"report_id"`
-		TargetGroup     string `json:"target_group"`    // 目标组（空 = 全部）
-		DistributeMode  string `json:"distribute_mode"` // "balance"（默认） 或 "copy"
+		CaseFileContent string   `json:"case_file_content"`
+		RepeatedTime    int      `json:"repeated_time"`
+		ReportID        string   `json:"report_id"`
+		TargetGroup     string   `json:"target_group"`    // 目标组（空 = 全部），组模式
+		TargetAgents    []string `json:"target_agents"`   // 指定 Agent ID 列表，Agent 模式（优先级高于 TargetGroup）
+		DistributeMode  string   `json:"distribute_mode"` // "balance"（默认） 或 "copy"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
@@ -197,17 +200,30 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 		req.DistributeMode = "balance"
 	}
 
+	// 校验是否有可用 Agent
 	m.mu.RLock()
 	agentCount := 0
 	for _, a := range m.agents {
-		if a.Status == "online" && (req.TargetGroup == "" || a.GroupID == req.TargetGroup) {
+		if a.Status != "online" {
+			continue
+		}
+		if len(req.TargetAgents) > 0 {
+			for _, id := range req.TargetAgents {
+				if a.ID == id {
+					agentCount++
+					break
+				}
+			}
+		} else if req.TargetGroup == "" || a.GroupID == req.TargetGroup {
 			agentCount++
 		}
 	}
 	m.mu.RUnlock()
 	if agentCount == 0 {
 		msg := "no agents registered"
-		if req.TargetGroup != "" {
+		if len(req.TargetAgents) > 0 {
+			msg = "no online agents matching the specified agent IDs"
+		} else if req.TargetGroup != "" {
 			msg = "no online agents in group " + req.TargetGroup
 		}
 		http.Error(w, msg, http.StatusServiceUnavailable)
@@ -218,6 +234,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 		ReportID:       req.ReportID,
 		Status:         "running",
 		TargetGroup:    req.TargetGroup,
+		TargetAgents:   req.TargetAgents,
 		DistributeMode: req.DistributeMode,
 	}
 	m.mu.Lock()
@@ -230,6 +247,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 		"case_file_content": req.CaseFileContent,
 		"repeated_time":     req.RepeatedTime,
 		"target_group":      req.TargetGroup,
+		"target_agents":     req.TargetAgents,
 		"distribute_mode":   req.DistributeMode,
 		"submitted_at":      time.Now().Format(time.RFC3339),
 	}
@@ -265,7 +283,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 			delete(m.taskCancels, req.ReportID)
 			m.mu.Unlock()
 		}()
-		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.DistributeMode); err != nil {
+		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.TargetAgents, req.DistributeMode); err != nil {
 			log.Printf("[Master] Task %s failed: %v", req.ReportID, err)
 			m.mu.Lock()
 			st.Status = "error"
@@ -423,9 +441,30 @@ func (m *Master) startExpiryCleanup() {
 	}
 }
 
+// startAgentCleanup 后台每 10s 检查：offline 超过 5 分钟的 Agent 从注册表删除。
+// 下线检测由 handleAgentPoll 的连接断开事件实时触发，此处仅做延迟清理。
+func (m *Master) startAgentCleanup() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		m.mu.Lock()
+		for id, a := range m.agents {
+			if a.Status == "offline" && now.Sub(a.LastSeen) > 5*time.Minute {
+				log.Printf("[Master] Agent %s removed (offline for %.0fs)", id, now.Sub(a.LastSeen).Seconds())
+				delete(m.agents, id)
+				delete(m.agentQueues, id)
+				m.redis.HDel(context.Background(), "agent:registry", id)
+			}
+		}
+		m.mu.Unlock()
+	}
+}
+
 // ---------- Agent Long-Poll ----------
 
 // handleAgentPoll Agent 长轮询接口：阻塞最多 30s 等待任务下发；无任务则返回 204。
+// 每次长轮询连接建立即视为 Agent 在线；连接断开（r.Context 取消）时立即标记 offline。
 func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID == "" {
@@ -433,7 +472,7 @@ func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 更新 lastSeen
+	// 连接建立：标记在线并更新 LastSeen
 	m.mu.Lock()
 	if info, ok := m.agents[agentID]; ok {
 		info.LastSeen = time.Now()
@@ -441,6 +480,17 @@ func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	queue := m.getOrCreateAgentQueueLocked(agentID)
 	m.mu.Unlock()
+
+	// 连接断开时立即标记 offline，记录时间供清理 goroutine 使用
+	defer func() {
+		m.mu.Lock()
+		if info, ok := m.agents[agentID]; ok && info.Status == "online" {
+			info.Status = "offline"
+			info.LastSeen = time.Now()
+			log.Printf("[Master] Agent %s offline (connection closed)", agentID)
+		}
+		m.mu.Unlock()
+	}()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
