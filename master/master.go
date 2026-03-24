@@ -335,6 +335,16 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// 压测完成，记录 EndTime 并持久化
+		{
+			endNow := time.Now()
+			endWriter := report_impl.NewRedisReportWriter(m.redis, "master")
+			if endMeta, endErr := m.reader.ReadReport(req.ReportID); endErr == nil {
+				endMeta.Meta.EndTime = endNow
+				_ = endWriter.WriteMeta(&endMeta.Meta)
+			}
+		}
+
 		// 聚合报告 + 生成 HTML
 		if err := m.aggregateAndGenerate(req.ReportID); err != nil {
 			log.Printf("[Master] Aggregate %s failed: %v", req.ReportID, err)

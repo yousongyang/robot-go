@@ -318,8 +318,6 @@ func (m *Master) aggregateAndGenerate(reportID string) error {
 		data.Meta.AgentIDs = agentIDs
 	}
 
-	// 更新 EndTime 并回写 meta 到 Redis（同步更新 ListReports 可见的数据）
-	data.Meta.EndTime = time.Now()
 	redisWriter := report_impl.NewRedisReportWriter(m.redis, "master")
 	_ = redisWriter.WriteMeta(&data.Meta)
 
