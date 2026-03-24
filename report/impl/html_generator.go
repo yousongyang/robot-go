@@ -354,6 +354,7 @@ func (g *EChartsHTMLGenerator) processMetrics(td *templateData, series []*report
 }
 
 // processOnlineUsers 将全部 online_users 系列合并成一张多系列折线图的 JSON。
+// 每个 Agent 一条线（按 agent 标签区分），并附加一条汇总的 Total 线。
 func (g *EChartsHTMLGenerator) processOnlineUsers(td *templateData, series []*report.MetricsSeries) {
 	if len(series) == 0 {
 		return
@@ -384,6 +385,7 @@ func (g *EChartsHTMLGenerator) processOnlineUsers(td *templateData, series []*re
 		Series     []ouEntry `json:"series"`
 	}
 	cd := ouChartData{TimeLabels: timeLabelsSorted}
+	total := make([]float64, len(timeLabelsSorted))
 	for _, s := range series {
 		values := make([]float64, len(timeLabelsSorted))
 		for _, pt := range s.Points {
@@ -393,13 +395,22 @@ func (g *EChartsHTMLGenerator) processOnlineUsers(td *templateData, series []*re
 			}
 		}
 		name := "online_users"
-		if v, ok := s.Labels["agent"]; ok {
+		if v, ok := s.Labels["agent"]; ok && v != "" {
 			name = v
 		}
-		if v, ok := s.Labels["case"]; ok && v != "" {
-			name += "/" + v
-		}
+		// 不附加 case 标签：online_users 是进程级指标
 		cd.Series = append(cd.Series, ouEntry{Name: name, Values: values})
+		for i, v := range values {
+			total[i] += v
+		}
+	}
+	// 多于一个 Agent 时才显示 Total
+	if len(series) > 1 {
+		rounded := make([]float64, len(total))
+		for i, v := range total {
+			rounded[i] = math.Round(v*100) / 100
+		}
+		cd.Series = append(cd.Series, ouEntry{Name: "Total", Values: rounded})
 	}
 	j, _ := json.Marshal(cd)
 	td.OnlineUsersJSON = template.JS(j)

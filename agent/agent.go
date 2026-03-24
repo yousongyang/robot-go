@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -18,14 +21,17 @@ import (
 	report_impl "github.com/atframework/robot-go/report/impl"
 )
 
+// ErrAgentIDConflict 同一 Agent ID 已被其他在线实例占用。
+var ErrAgentIDConflict = errors.New("agent ID conflict: another instance with this ID is already online")
+
 // AgentConfig Agent 启动配置
 type AgentConfig struct {
 	MasterAddr string // Master HTTP 地址
 	RedisAddr  string
 	RedisPwd   string
-	RedisDB    int
 	AgentID    string // 唯一标识（默认 hostname+pid）
 	GroupID    string // 组 ID（可选，Master 按组分发任务）
+	SessionID  string // 进程级会话 ID，由 NewAgent 自动生成；用于 Master 检测 ID 冲突
 }
 
 // Agent 分布式压测执行端（主动向 Master 拉取任务）
@@ -41,8 +47,13 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		host, _ := os.Hostname()
 		cfg.AgentID = fmt.Sprintf("agent-%s-%d", host, os.Getpid())
 	}
+	if cfg.SessionID == "" {
+		// 用 hostname+pid+启动时间纳秒 生成进程唯一会话 ID
+		host, _ := os.Hostname()
+		cfg.SessionID = fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
+	}
 
-	redisClient, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd, cfg.RedisDB)
+	redisClient, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd)
 	if err != nil {
 		return nil, err
 	}
@@ -57,10 +68,6 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 // Start 注册到 Master，然后进入长轮询循环（阻塞）。
 // 每次 poll 连接建立即作为在线心跳，无需独立 heartbeatLoop。
 func (a *Agent) Start() error {
-	if err := a.registerToMaster(); err != nil {
-		log.Printf("[Agent] Warning: register to master failed: %v (will retry)", err)
-	}
-
 	log.Printf("[Agent] %s started, Master=%s, Redis=%s", a.cfg.AgentID, a.cfg.MasterAddr, a.cfg.RedisAddr)
 	a.pollLoop()
 	return nil
@@ -72,6 +79,9 @@ func (a *Agent) pollLoop() {
 	for {
 		// 每轮 poll 前确保已注册，同时通知 Master 连接即将建立
 		if err := a.registerToMaster(); err != nil {
+			if errors.Is(err, ErrAgentIDConflict) {
+				log.Fatalf("[Agent] %v (agent-id=%s) — 请更换 agent-id 或等待旧实例下线", err, a.cfg.AgentID)
+			}
 			log.Printf("[Agent] register failed: %v, retry in 3s", err)
 			time.Sleep(3 * time.Second)
 			continue
@@ -116,10 +126,13 @@ func (a *Agent) pollTask() (*robot_case.AgentTask, error) {
 	return &task, nil
 }
 
-// executeTask 执行一个压测任务，将数据写入 Redis，并上报结果给 Master。
-// 执行期间定期 flush 部分打点数据到 Redis 以支持实时预览，
-// 同时轮询 Master 检查任务是否被取消。
+// executeTask 执行一个任务。若 TaskType 为 "reboot" 则重置内部状态；
+// 否则执行压测任务，将数据写入 Redis，并上报结果给 Master。
 func (a *Agent) executeTask(task *robot_case.AgentTask) {
+	if task.TaskType == "reboot" {
+		a.performReboot(task)
+		return
+	}
 	log.Printf("[Agent] Executing task: key=%s report=%s case=%d name=%s IDs=[%d,%d) QPS=%.1f",
 		task.TaskKey, task.ReportID, task.CaseIndex, task.Params.CaseName,
 		task.Params.OpenIDStart, task.Params.OpenIDEnd, task.Params.TargetQPS)
@@ -189,14 +202,14 @@ func (a *Agent) executeTask(task *robot_case.AgentTask) {
 		)
 	}
 
-	// online_users 指标（带 case 标签）
+	// online_users 指标（按 Agent 维度，不区分 Case）
 	onlineMetrics := onlineMetricsCollector.Flush()
 	for _, s := range onlineMetrics {
 		if s.Labels == nil {
 			s.Labels = make(map[string]string)
 		}
 		s.Labels["agent"] = a.cfg.AgentID
-		s.Labels["case"] = task.Params.CaseName
+		// 不附加 case 标签：online_users 是进程级总在线数，与 case 无关
 	}
 	metricsData = append(metricsData, onlineMetrics...)
 
@@ -219,6 +232,62 @@ func (a *Agent) executeTask(task *robot_case.AgentTask) {
 	}); err != nil {
 		log.Printf("[Agent] post result error: %v", err)
 	}
+}
+
+// performReboot 进程级重启：登出所有用户、上报完成后重新拉起自身进程。
+// -agent-id 会被注入到启动参数，保证新进程使用相同的 AgentID。
+func (a *Agent) performReboot(task *robot_case.AgentTask) {
+	log.Printf("[Agent] Process reboot requested for %s", a.cfg.AgentID)
+	user_data.LogoutAllUsers()
+
+	// 先上报结果，让 Master 解除对本任务的阻塞
+	if task.TaskKey != "" {
+		if err := a.postResult(robot_case.AgentTaskResult{
+			TaskKey: task.TaskKey,
+		}); err != nil {
+			log.Printf("[Agent] post reboot result error: %v", err)
+		}
+	}
+
+	// 短暂等待，确保 HTTP 响应已完全发送
+	time.Sleep(300 * time.Millisecond)
+
+	if err := a.execSelf(); err != nil {
+		log.Printf("[Agent] Process restart failed: %v", err)
+	}
+}
+
+// execSelf 重新启动当前可执行文件（带相同启动参数），然后退出当前进程。
+// 会自动注入 -agent-id 以确保新进程 AgentID 不变。
+func (a *Agent) execSelf() error {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	args := injectFlagArg(os.Args[1:], "agent-id", a.cfg.AgentID)
+	log.Printf("[Agent] Restarting: %s %v", exe, args)
+	cmd := exec.Command(exe, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start new process: %w", err)
+	}
+	log.Printf("[Agent] New process started (PID %d), exiting current", cmd.Process.Pid)
+	os.Exit(0)
+	return nil // unreachable
+}
+
+// injectFlagArg 确保 args 中包含 -<name> <value>；若已存在则不修改。
+func injectFlagArg(args []string, name, value string) []string {
+	for _, a := range args {
+		if a == "-"+name || a == "--"+name ||
+			strings.HasPrefix(a, "-"+name+"=") ||
+			strings.HasPrefix(a, "--"+name+"=") {
+			return args
+		}
+	}
+	return append(append([]string{}, args...), "-"+name, value)
 }
 
 // flushPartialData 将内存中的部分打点数据 flush 到 Redis（增量写入）。
@@ -300,7 +369,10 @@ func (a *Agent) registerToMaster() error {
 	if a.cfg.MasterAddr == "" {
 		return nil
 	}
-	payload := map[string]string{"id": a.cfg.AgentID}
+	payload := map[string]string{
+		"id":         a.cfg.AgentID,
+		"session_id": a.cfg.SessionID,
+	}
 	if a.cfg.GroupID != "" {
 		payload["group_id"] = a.cfg.GroupID
 	}
@@ -309,7 +381,11 @@ func (a *Agent) registerToMaster() error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: %s", ErrAgentIDConflict, strings.TrimSpace(string(msg)))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("master returned %d", resp.StatusCode)
 	}

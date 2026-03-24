@@ -93,7 +93,6 @@ func main() {
 | `-mode` | 空（standalone） | 运行模式：空=单机，`master`，`agent` |
 | `-redis-addr` | `localhost:6379` | Redis 地址（Master/Agent 数据交换） |
 | `-redis-pwd` | 空 | Redis 密码 |
-| `-redis-db` | `0` | Redis 数据库编号 |
 | `-listen` | `:8080` | HTTP 监听地址（Master 模式） |
 | `-master-addr` | 空 | Master HTTP 地址（Agent 模式必填），如 `http://192.168.1.10:8080` |
 | `-agent-id` | 空（自动生成） | Agent 唯一 ID，用于区分多个 Agent |

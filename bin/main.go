@@ -26,7 +26,6 @@ func main() {
 	fs.String("listen", ":8080", "HTTP listen address")
 	fs.String("redis-addr", "localhost:6379", "Redis address")
 	fs.String("redis-pwd", "", "Redis password")
-	fs.Int("redis-db", 0, "Redis DB index")
 	fs.String("report-dir", "../report", "HTML report output directory")
 	fs.String("report-expiry", "", "auto-delete reports after duration (e.g. 168h=7d; empty=never)")
 
@@ -53,9 +52,6 @@ func main() {
 		RedisAddr:  fs.Lookup("redis-addr").Value.String(),
 		RedisPwd:   fs.Lookup("redis-pwd").Value.String(),
 		ReportDir:  fs.Lookup("report-dir").Value.String(),
-	}
-	if v := fs.Lookup("redis-db").Value.String(); v != "" {
-		fmt.Sscanf(v, "%d", &cfg.RedisDB)
 	}
 	if v := fs.Lookup("report-expiry").Value.String(); v != "" && v != "0" {
 		if d, err := time.ParseDuration(v); err == nil {

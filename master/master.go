@@ -25,18 +25,18 @@ type MasterConfig struct {
 	ListenAddr   string // HTTP 监听地址，如 ":8080"
 	RedisAddr    string
 	RedisPwd     string
-	RedisDB      int
 	ReportDir    string        // HTML 报告输出目录
 	ReportExpiry time.Duration // 报告自动过期时长；0 表示永不过期（如 7*24*time.Hour = 7 天）
 }
 
 // agentInfo 一个已注册 Agent 的信息
 type agentInfo struct {
-	ID       string    `json:"id"`
-	Addr     string    `json:"addr"`
-	GroupID  string    `json:"group_id"`
-	Status   string    `json:"status"`
-	LastSeen time.Time `json:"last_seen"`
+	ID        string    `json:"id"`
+	Addr      string    `json:"addr"`
+	GroupID   string    `json:"group_id"`
+	Status    string    `json:"status"`
+	LastSeen  time.Time `json:"last_seen"`
+	sessionID string    // 不导出到 JSON；用于区分同 ID 的不同进程实例
 }
 
 // taskStatus 一次分布式任务的状态
@@ -69,7 +69,7 @@ type Master struct {
 
 // NewMaster 创建 Master 实例并连接 Redis
 func NewMaster(cfg MasterConfig) (*Master, error) {
-	client, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd, cfg.RedisDB)
+	client, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +96,7 @@ func (m *Master) Start() error {
 	// API
 	mux.HandleFunc("POST /api/agents/register", m.handleAgentRegister)
 	mux.HandleFunc("GET /api/agents", m.handleListAgents)
+	mux.HandleFunc("POST /api/agents/reboot", m.handleAgentReboot)
 	mux.HandleFunc("POST /api/tasks", m.handleSubmitTask)
 	mux.HandleFunc("GET /api/tasks/all", m.handleListAllTasks)
 	mux.HandleFunc("GET /api/tasks/history", m.handleTaskHistory)
@@ -141,27 +142,44 @@ func (m *Master) Stop() error {
 // ---------- API Handlers ----------
 
 func (m *Master) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
-	var info agentInfo
-	if err := json.NewDecoder(r.Body).Decode(&info); err != nil {
+	var req struct {
+		ID        string `json:"id"`
+		Addr      string `json:"addr"`
+		GroupID   string `json:"group_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if info.ID == "" {
+	if req.ID == "" {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	info.Status = "online"
-	info.LastSeen = time.Now()
 
 	m.mu.Lock()
-	m.agents[info.ID] = &info
+	existing, exists := m.agents[req.ID]
+	if exists && existing.Status == "online" && existing.sessionID != "" && existing.sessionID != req.SessionID {
+		m.mu.Unlock()
+		http.Error(w, fmt.Sprintf("agent id %q is already online (session conflict)", req.ID), http.StatusConflict)
+		return
+	}
+	info := &agentInfo{
+		ID:        req.ID,
+		Addr:      req.Addr,
+		GroupID:   req.GroupID,
+		Status:    "online",
+		LastSeen:  time.Now(),
+		sessionID: req.SessionID,
+	}
+	m.agents[req.ID] = info
 	m.mu.Unlock()
 
 	// 写入 Redis
 	data, _ := json.Marshal(info)
-	m.redis.HSet(context.Background(), "agent:registry", info.ID, string(data))
+	m.redis.HSet(context.Background(), "agent:registry", req.ID, string(data))
 
-	log.Printf("[Master] Agent registered: %s", info.ID)
+	log.Printf("[Master] Agent registered: %s (session=%s)", req.ID, req.SessionID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -175,14 +193,36 @@ func (m *Master) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleAgentReboot 向目标 Agent（或全部在线 Agent）发送 Reboot 任务（异步执行）。
+func (m *Master) handleAgentReboot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AgentIDs    []string `json:"agent_ids"`
+		TargetGroup string   `json:"target_group"`
+	}
+	if r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	go func() {
+		defer cancel()
+		if err := m.rebootAgents(ctx, req.TargetGroup, req.AgentIDs); err != nil {
+			log.Printf("[Master] Reboot agents failed: %v", err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "reboot_sent"})
+}
+
 func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CaseFileContent string   `json:"case_file_content"`
 		RepeatedTime    int      `json:"repeated_time"`
 		ReportID        string   `json:"report_id"`
-		TargetGroup     string   `json:"target_group"`    // 目标组（空 = 全部），组模式
-		TargetAgents    []string `json:"target_agents"`   // 指定 Agent ID 列表，Agent 模式（优先级高于 TargetGroup）
-		DistributeMode  string   `json:"distribute_mode"` // "balance"（默认） 或 "copy"
+		TargetGroup     string   `json:"target_group"`      // 目标组（空 = 全部），组模式
+		TargetAgents    []string `json:"target_agents"`     // 指定 Agent ID 列表，Agent 模式（优先级高于 TargetGroup）
+		DistributeMode  string   `json:"distribute_mode"`   // "balance"（默认） 或 "copy"
+		RebootBefore    bool     `json:"reboot_before_run"` // 执行前先 Reboot 所有目标 Agent
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
@@ -286,7 +326,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 			delete(m.taskCancels, req.ReportID)
 			m.mu.Unlock()
 		}()
-		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.TargetAgents, req.DistributeMode); err != nil {
+		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.TargetAgents, req.DistributeMode, req.RebootBefore); err != nil {
 			log.Printf("[Master] Task %s failed: %v", req.ReportID, err)
 			m.mu.Lock()
 			st.Status = "error"
@@ -485,13 +525,17 @@ func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	taskSent := false
-	// 连接断开时处理 Agent 状态：若已下发任务则标记 busy，否则标记 offline
+	clientDisconnected := false
+	// 连接断开时处理 Agent 状态：
+	//   - 已下发任务 → busy
+	//   - 客户端真正断开（非 poll 超时）→ offline
+	//   - poll 正常超时无任务（返回 204）→ 保持 online，不打 offline 日志
 	defer func() {
 		m.mu.Lock()
 		if info, ok := m.agents[agentID]; ok {
 			if taskSent {
 				info.Status = "busy"
-			} else if info.Status == "online" {
+			} else if clientDisconnected && info.Status == "online" {
 				info.Status = "offline"
 				log.Printf("[Master] Agent %s offline (connection closed)", agentID)
 			}
@@ -500,7 +544,8 @@ func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	parentCtx := r.Context()
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer cancel()
 
 	select {
@@ -508,6 +553,10 @@ func (m *Master) handleAgentPoll(w http.ResponseWriter, r *http.Request) {
 		taskSent = true
 		writeJSON(w, http.StatusOK, task)
 	case <-ctx.Done():
+		// 若是 parentCtx 被取消（客户端断开），才标记下线；若只是 poll 30s 超时，保持在线
+		if parentCtx.Err() != nil {
+			clientDisconnected = true
+		}
 		w.WriteHeader(http.StatusNoContent) // 204: 暂无任务，Agent 应立即重试
 	}
 }

@@ -42,13 +42,12 @@ func NewRobotFlagSet() *flag.FlagSet {
 	flagSet.String("crypto", "none", "atgateway Mod: crypto algorithm list: none, xxtea, aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20, chacha20-poly1305, xchacha20-poly1305")
 	flagSet.String("compression", "none", "atgateway Mod: compression algorithm list: none, zstd, lz4, snappy, zlib")
 
-	flagSet.String("report-dir", "../report", "report output directory (enables report generation)")
+	flagSet.String("report-dir", "./report", "report output directory (enables report generation)")
 
 	// 分布式模式
 	flagSet.String("mode", "", "run mode: (empty)=standalone, master, agent")
 	flagSet.String("redis-addr", "localhost:6379", "Redis address for distributed mode")
 	flagSet.String("redis-pwd", "", "Redis password")
-	flagSet.Int("redis-db", 0, "Redis DB index")
 	flagSet.String("master-addr", "", "Master HTTP address (agent mode)")
 	flagSet.String("listen", ":8080", "HTTP listen address (master mode)")
 	flagSet.String("agent-id", "", "Agent ID (auto-generated if empty)")
@@ -246,7 +245,6 @@ func startMaster(flagSet *flag.FlagSet) {
 		ListenAddr: getFlagString(flagSet, "listen"),
 		RedisAddr:  getFlagString(flagSet, "redis-addr"),
 		RedisPwd:   getFlagString(flagSet, "redis-pwd"),
-		RedisDB:    getFlagInt(flagSet, "redis-db"),
 		ReportDir:  getFlagString(flagSet, "report-dir"),
 	}
 	m, err := master.NewMaster(cfg)
@@ -284,7 +282,6 @@ func startAgent(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 		MasterAddr: getFlagString(flagSet, "master-addr"),
 		RedisAddr:  getFlagString(flagSet, "redis-addr"),
 		RedisPwd:   getFlagString(flagSet, "redis-pwd"),
-		RedisDB:    getFlagInt(flagSet, "redis-db"),
 		AgentID:    getFlagString(flagSet, "agent-id"),
 		GroupID:    getFlagString(flagSet, "agent-group"),
 	}

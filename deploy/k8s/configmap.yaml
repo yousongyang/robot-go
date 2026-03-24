@@ -8,5 +8,4 @@ data:
     listen: ":8080"
     redis-addr: "redis.robot-master.svc.cluster.local:6379"
     redis-pwd: ""
-    redis-db: 0
     report-dir: "/data/report"

@@ -29,7 +29,9 @@ func (p *StressParams) UserCount() int64 { return p.OpenIDEnd - p.OpenIDStart }
 
 // AgentTask Master 通过长轮询下发给 Agent 的单次子任务。
 // TaskKey 格式：{reportID}/{caseIndex}/{agentID}，用于结果通道匹配。
+// TaskType 为空或 "stress" 时执行压测；"reboot" 时 Agent 重置内部状态。
 type AgentTask struct {
+	TaskType  string       `json:"task_type,omitempty"` // "" / "stress" / "reboot"
 	TaskKey   string       `json:"task_key"`
 	ReportID  string       `json:"report_id"`
 	CaseIndex int          `json:"case_index"`

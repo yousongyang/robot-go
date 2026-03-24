@@ -196,7 +196,10 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
 <div class="page" id="page-agents">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
     <h2 style="font-size:18px">Registered Agents</h2>
-    <button class="btn btn-secondary btn-sm" onclick="loadAgents()">&#x21BB; Refresh</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-warn btn-sm" onclick="rebootAllAgents()">&#x1F504; Reboot All</button>
+      <button class="btn btn-secondary btn-sm" onclick="loadAgents()">&#x21BB; Refresh</button>
+    </div>
   </div>
   <div class="table-wrap">
     <table>
@@ -205,6 +208,7 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
         <th class="sortable" onclick="sortAgents('group_id')">Group <span id="sort-group_id" class="sort-arrow"></span></th>
         <th class="sortable" onclick="sortAgents('status')">Status <span id="sort-status" class="sort-arrow"></span></th>
         <th class="sortable" onclick="sortAgents('last_seen')">Last Seen <span id="sort-last_seen" class="sort-arrow"></span></th>
+        <th>Actions</th>
       </tr></thead>
       <tbody id="agents-body"></tbody>
     </table>
@@ -280,8 +284,11 @@ login_bench false       test_   1      1001 50     50   60">#!stress
         <div class="form-hint">Balance: agents share load. Copy: every agent runs the full case independently.</div>
       </div>
     </div>
-    <div style="display:flex;gap:12px;align-items:center">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-primary" id="btnSubmit" onclick="submitTask()">&#x25B6; Submit Task</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="taskRebootBefore"> Reboot target agents before running
+      </label>
       <span id="submitStatus" style="font-size:13px;color:var(--muted)"></span>
     </div>
   </div>
@@ -300,7 +307,7 @@ login_bench false       test_   1      1001 50     50   60">#!stress
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Report ID</th><th>Group</th><th>Mode</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Report ID</th><th>Group</th><th>Mode</th><th>Submitted At</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead>
       <tbody id="tasks-body"></tbody>
     </table>
   </div>
@@ -416,6 +423,14 @@ function fmtTime(t) {
   return d.toLocaleString('zh-CN', { hour12: false });
 }
 
+function fmtAgentIds(ids) {
+  if (!ids || ids.length === 0) return '-';
+  if (ids.length <= 3) return ids.map(escapeHtml).join('<br>');
+  const preview = ids.slice(0, 2).map(escapeHtml).join('<br>');
+  const all = escapeHtml(ids.join('\n'));
+  return preview + '<br><span style="color:var(--muted);cursor:help" title="' + all + '">+' + (ids.length - 2) + ' more</span>';
+}
+
 function statusBadge(s) {
   return '<span class="badge ' + (s || '') + '">' + (s || '-') + '</span>';
 }
@@ -515,7 +530,8 @@ function renderAgentsTable() {
     return '<tr><td><strong>' + escapeHtml(a.id) + '</strong></td>' +
       '<td>' + escapeHtml(a.group_id || '-') + '</td>' +
       '<td>' + statusBadge(a.status === 'busy' ? 'busy' : (online ? 'online' : 'offline')) + '</td>' +
-      '<td style="color:var(--muted);font-size:12px">' + ago + '</td></tr>';
+      '<td style="color:var(--muted);font-size:12px">' + ago + '</td>' +
+      '<td><button class="btn btn-warn btn-sm" onclick="rebootAgent(\'' + escapeHtml(a.id).replace(/'/g,"\\'") + '\')">&#x1F504; Reboot</button></td></tr>';
   }).join('');
 }
 
@@ -525,6 +541,26 @@ async function loadAgents() {
     agentsData = agents || [];
     renderAgentsTable();
   } catch (e) { toast('Load agents failed: ' + e.message, 'error'); }
+}
+
+async function rebootAllAgents() {
+  if (!confirm('Reboot ALL online agents?\nThis will disconnect all active user connections on every agent.')) return;
+  try {
+    await api('POST', '/api/agents/reboot', {});
+    toast('Reboot commands sent to all agents', 'success');
+  } catch (e) {
+    toast('Reboot failed: ' + e.message, 'error');
+  }
+}
+
+async function rebootAgent(id) {
+  if (!confirm('Reboot agent "' + id + '"?\nThis will disconnect all active user connections on this agent.')) return;
+  try {
+    await api('POST', '/api/agents/reboot', { agent_ids: [id] });
+    toast('Reboot command sent to: ' + id, 'success');
+  } catch (e) {
+    toast('Reboot failed: ' + e.message, 'error');
+  }
 }
 
 function isOnline(lastSeen) {
@@ -681,6 +717,7 @@ async function submitTask() {
   try {
     const body = { case_file_content: content, repeated_time: repeated, distribute_mode: distributeMode };
     if (reportId) body.report_id = reportId;
+    body.reboot_before_run = document.getElementById('taskRebootBefore').checked;
     if (targetMode === 'agent') {
       if (selectedAgents.length > 0) body.target_agents = selectedAgents.slice();
     } else {
@@ -728,6 +765,7 @@ async function loadTasks() {
       return '<tr><td><strong>' + escapeHtml(t.report_id) + '</strong></td>' +
         '<td>' + escapeHtml(t.target_group || 'all') + '</td>' +
         '<td>' + escapeHtml(t.distribute_mode || 'balance') + '</td>' +
+        '<td style="font-size:12px;color:var(--muted)">' + fmtTime(t.submitted_at) + '</td>' +
         '<td>' + statusBadge(t.status) + '</td>' +
         '<td style="color:var(--danger);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis">' +
         escapeHtml(t.error || '') + '</td>' +
@@ -823,7 +861,7 @@ async function loadReports() {
       '<td>' + escapeHtml(r.title || '-') + '</td>' +
       '<td style="font-size:12px">' + fmtTime(r.start_time) + '</td>' +
       '<td style="font-size:12px">' + fmtTime(r.end_time) + '</td>' +
-      '<td style="font-size:12px">' + (r.agent_ids ? r.agent_ids.length : 0) + '</td>' +
+      '<td style="font-size:12px">' + fmtAgentIds(r.agent_ids) + '</td>' +
       '<td><div style="display:flex;gap:6px">' +
         '<button class="btn btn-sm btn-primary" onclick="viewReport(\'' + escapeHtml(r.report_id) + '\')">View</button>' +
         '<button class="btn btn-sm btn-secondary" onclick="regenReport(\'' + escapeHtml(r.report_id) + '\',this)">Regenerate</button>' +

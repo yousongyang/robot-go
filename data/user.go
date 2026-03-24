@@ -118,3 +118,18 @@ func OnlineUserCount() int {
 	defer userMapContainerLock.RUnlock()
 	return len(userMapContainer)
 }
+
+// LogoutAllUsers 登出并清理所有在线用户（Agent Reboot 时调用）
+func LogoutAllUsers() {
+	userMapContainerLock.Lock()
+	users := make([]User, 0, len(userMapContainer))
+	for _, u := range userMapContainer {
+		users = append(users, u)
+	}
+	userMapContainer = make(map[string]User) // 清空容器
+	userMapContainerLock.Unlock()
+
+	for _, u := range users {
+		u.Logout()
+	}
+}

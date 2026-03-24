@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,16 @@ import (
 
 // distributeAndWait 解析 case 文件、按行分发给 Agent 并等待全部完成。
 // targetGroup 为空时分发给所有在线 Agent；distributeMode 为 "copy" 或 "balance"。
-func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string) error {
+// rebootBefore=true 时将在分发正式任务前先向所有目标 Agent 发送 Reboot 命令。
+func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string, rebootBefore bool) error {
+	// 先 Reboot 目标 Agent（如果需要）
+	if rebootBefore {
+		log.Printf("[Master] Rebooting agents before task %s", reportID)
+		if err := m.rebootAgents(ctx, targetGroup, targetAgents); err != nil {
+			log.Printf("[Master] Reboot agents warning: %v", err)
+		}
+	}
+
 	// 解析 case 文件
 	isStress, lines := parseCaseContent(caseFileContent)
 	if !isStress {
@@ -171,6 +181,65 @@ func (m *Master) distributeSingleCase(ctx context.Context, reportID string, case
 	return nil
 }
 
+// rebootAgents 向目标 Agent 发送 Reboot 任务并等待所有 Agent 响应。
+// 若指定了 targetAgents，则只 Reboot 这些 Agent；否则按 targetGroup 过滤（空 = 全部在线 Agent）。
+func (m *Master) rebootAgents(ctx context.Context, targetGroup string, targetAgents []string) error {
+	agentSet := make(map[string]struct{}, len(targetAgents))
+	for _, id := range targetAgents {
+		agentSet[id] = struct{}{}
+	}
+
+	m.mu.RLock()
+	agents := make([]*agentInfo, 0, len(m.agents))
+	for _, a := range m.agents {
+		if a.Status != "online" && a.Status != "busy" {
+			continue
+		}
+		if len(agentSet) > 0 {
+			if _, ok := agentSet[a.ID]; ok {
+				agents = append(agents, a)
+			}
+		} else if targetGroup == "" || a.GroupID == targetGroup {
+			agents = append(agents, a)
+		}
+	}
+	m.mu.RUnlock()
+
+	if len(agents) == 0 {
+		return nil
+	}
+
+	stamp := time.Now().Format("20060102-150405")
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(agents))
+	for _, agent := range agents {
+		taskKey := fmt.Sprintf("reboot/%s/%s", stamp, agent.ID)
+		task := &robot_case.AgentTask{
+			TaskType: "reboot",
+			TaskKey:  taskKey,
+		}
+		wg.Add(1)
+		go func(a *agentInfo, t *robot_case.AgentTask) {
+			defer wg.Done()
+			if err := m.enqueueAgentTask(ctx, a, t); err != nil {
+				errCh <- fmt.Errorf("reboot agent %s: %w", a.ID, err)
+			}
+		}(agent, task)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	log.Printf("[Master] Rebooted %d agent(s)", len(agents))
+	return nil
+}
+
 // enqueueAgentTask 将任务放入 agent 的内存队列，并阻塞到 agent 执行完成后返回。
 func (m *Master) enqueueAgentTask(ctx context.Context, ag *agentInfo, task *robot_case.AgentTask) error {
 	resultCh := make(chan robot_case.AgentTaskResult, 1)
@@ -229,8 +298,30 @@ func (m *Master) aggregateAndGenerate(reportID string) error {
 	cleaned := report.CleanTracingsToMetrics(data.Tracings)
 	data.Metrics = append(data.Metrics, cleaned...)
 
-	// 更新 EndTime
+	// 从 Redis key 中提取参与本次报告的 Agent ID 列表
+	ctx := context.Background()
+	tracingKeys, _ := m.scanRedisKeys(ctx, fmt.Sprintf("report:tracing:%s:*", reportID))
+	prefix := fmt.Sprintf("report:tracing:%s:", reportID)
+	agentIDSet := make(map[string]struct{})
+	for _, key := range tracingKeys {
+		agentID := strings.TrimPrefix(key, prefix)
+		if agentID != "" {
+			agentIDSet[agentID] = struct{}{}
+		}
+	}
+	if len(agentIDSet) > 0 {
+		agentIDs := make([]string, 0, len(agentIDSet))
+		for id := range agentIDSet {
+			agentIDs = append(agentIDs, id)
+		}
+		sort.Strings(agentIDs)
+		data.Meta.AgentIDs = agentIDs
+	}
+
+	// 更新 EndTime 并回写 meta 到 Redis（同步更新 ListReports 可见的数据）
 	data.Meta.EndTime = time.Now()
+	redisWriter := report_impl.NewRedisReportWriter(m.redis, "master")
+	_ = redisWriter.WriteMeta(&data.Meta)
 
 	// 写入到本地 JSON 备份
 	outDir := filepath.Join(m.cfg.ReportDir, reportID)

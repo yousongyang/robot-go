@@ -114,11 +114,10 @@ func (r *RedisReportReader) BarrierCount(reportID string, caseIndex int) (int64,
 }
 
 // NewRedisClient 创建并检查一个 Redis 连接。
-func NewRedisClient(addr, password string, db int) (*redis.Client, error) {
+func NewRedisClient(addr, password string) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
-		DB:       db,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
