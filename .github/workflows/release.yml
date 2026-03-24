@@ -43,7 +43,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           BIN_NAME="robot-master-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -trimpath -ldflags="-s -w" -o "${BIN_NAME}" ./master
+          go build -trimpath -ldflags="-s -w" -o "${BIN_NAME}" ./bin
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
