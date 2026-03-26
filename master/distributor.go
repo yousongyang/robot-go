@@ -321,21 +321,44 @@ func (m *Master) aggregateAndGenerate(reportID string) error {
 		data.Meta.AgentIDs = agentIDs
 	}
 
-	redisWriter := report_impl.NewRedisReportWriter(m.redis, "master")
-	_ = redisWriter.WriteMeta(&data.Meta)
+	data.Meta.RawDataSize = 0
+	// 计算原始数据大小（近似 Redis 占用：tracings + metrics 序列化大小）
+	if tb, err := json.Marshal(data.Tracings); err == nil {
+		data.Meta.RawDataSize += int64(len(tb))
+	}
+	if mb, err := json.Marshal(data.Metrics); err == nil {
+		data.Meta.RawDataSize += int64(len(mb))
+	}
 
 	// 写入到本地 JSON 备份（展开的指标，不写入原始打点以减小磁盘占用）
 	outDir := filepath.Join(m.cfg.ReportDir, reportID)
+	htmlPath := filepath.Join(outDir, "html")
+	// 使用上一次生成的 HTML 文件大小作为初始 ReportSize 估值
+	if fi, statErr := os.Stat(htmlPath); statErr == nil {
+		data.Meta.ReportSize = fi.Size()
+	}
+
+	redisWriter := report_impl.NewRedisReportWriter(m.redis, "master")
+	_ = redisWriter.WriteMeta(&data.Meta)
+
 	_ = os.MkdirAll(outDir, 0750)
 	localWriter := report_impl.NewJSONFileWriter(m.cfg.ReportDir)
 	_ = localWriter.WriteMeta(&data.Meta)
+	_ = localWriter.WriteTracings(reportID, data.Tracings)
 	_ = localWriter.WriteMetrics(reportID, data.Metrics)
 
 	// 生成 HTML
-	htmlPath := filepath.Join(outDir, "html")
 	if err := m.gen.GenerateToFile(data, htmlPath); err != nil {
 		return fmt.Errorf("generate html: %w", err)
 	}
+
+	// 生成完毕后更新实际报告大小，并回写 meta
+	if fi, statErr := os.Stat(htmlPath); statErr == nil {
+		data.Meta.ReportSize = fi.Size()
+		_ = localWriter.WriteMeta(&data.Meta)
+		_ = redisWriter.WriteMeta(&data.Meta)
+	}
+
 	log.Printf("[Master] Report generated: %s", htmlPath)
 	return nil
 }

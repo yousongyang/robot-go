@@ -29,7 +29,7 @@ func (w *JSONFileWriter) WriteTracings(reportID string, records []*report.Tracin
 	if len(records) == 0 {
 		return nil
 	}
-	return w.appendJSON(reportID, "tracings.json", records)
+	return w.writeJSON(reportID, "tracings.json", records)
 }
 
 func (w *JSONFileWriter) WriteMetrics(reportID string, series []*report.MetricsSeries) error {

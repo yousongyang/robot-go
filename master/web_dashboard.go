@@ -349,7 +349,7 @@ login_bench false       test_   1      1001 50     50   60">#!stress
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Report ID</th><th>Title</th><th>Start Time</th><th>End Time</th><th>Agents</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Report ID</th><th>Title</th><th>Start Time</th><th>End Time</th><th>Agents</th><th>原始数据</th><th>报告大小</th></tr></thead>
       <tbody id="reports-body"></tbody>
     </table>
   </div>
@@ -427,6 +427,13 @@ function fmtTime(t) {
   if (!t || t === '0001-01-01T00:00:00Z') return '-';
   const d = new Date(t);
   return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+function fmtSize(n) {
+  if (!n || n <= 0) return '-';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 
 function fmtAgentIds(ids) {
@@ -868,6 +875,8 @@ async function loadReports() {
       '<td style="font-size:12px">' + fmtTime(r.start_time) + '</td>' +
       '<td style="font-size:12px">' + fmtTime(r.end_time) + '</td>' +
       '<td style="font-size:12px">' + fmtAgentIds(r.agent_ids) + '</td>' +
+      '<td style="font-size:12px">' + fmtSize(r.raw_data_size) + '</td>' +
+      '<td style="font-size:12px">' + fmtSize(r.report_size) + '</td>' +
       '<td><div style="display:flex;gap:6px">' +
         '<button class="btn btn-sm btn-primary" onclick="viewReport(\'' + escapeHtml(r.report_id) + '\')">View</button>' +
         '<button class="btn btn-sm btn-secondary" onclick="regenReport(\'' + escapeHtml(r.report_id) + '\',this)">Regenerate</button>' +

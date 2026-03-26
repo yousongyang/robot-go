@@ -45,16 +45,14 @@ func (g *EChartsHTMLGenerator) GenerateToFile(data *report.ReportData, outputPat
 // --- 模板数据结构 ---
 
 type caseStat struct {
-	Name    string  `json:"name"`
-	Total   int     `json:"total"`
-	Success int     `json:"success"`
-	Failed  int     `json:"failed"`
-	AvgMs   float64 `json:"avgMs"`
-	P50Ms   int64   `json:"p50Ms"`
-	P90Ms   int64   `json:"p90Ms"`
-	P99Ms   int64   `json:"p99Ms"`
-	MinMs   int64   `json:"minMs"`
-	MaxMs   int64   `json:"maxMs"`
+	Name       string  `json:"name"`
+	Total      int     `json:"total"`
+	Success    int     `json:"success"`
+	Failed     int     `json:"failed"`
+	AvgMs      float64 `json:"avgMs"`
+	VarianceMs int64   `json:"varianceMs"`
+	MinMs      int64   `json:"minMs"`
+	MaxMs      int64   `json:"maxMs"`
 }
 
 type metricsSection struct {
@@ -69,24 +67,22 @@ type metricsSection struct {
 // metricsDataEntry 为指标下拉筛选提供的 JS 可用数据
 type metricsDataEntry struct {
 	Name       string    `json:"name"`
-	CaseGroup  string    `json:"caseGroup"`
-	AgentGroup string    `json:"agentGroup"`
-	Labels     string    `json:"labels"`
+	CaseGroup  string    `json:"caseGroup,omitempty"`
+	AgentGroup string    `json:"agentGroup,omitempty"`
+	Labels     string    `json:"labels,omitempty"`
 	Times      []string  `json:"times"`
 	Values     []float64 `json:"values"`
 }
 
 // chartSeriesData 按秒聚合的单条 case 时间序列
 type chartSeriesData struct {
-	Name    string           `json:"name"`
-	QPS     []int            `json:"qps"`
-	Success []int            `json:"success"`
-	Failed  []int            `json:"failed"`
-	AvgMs   []float64        `json:"avgMs"`
-	P50Ms   []int64          `json:"p50Ms"`
-	P90Ms   []int64          `json:"p90Ms"`
-	P99Ms   []int64          `json:"p99Ms"`
-	Errors  []errorCodeEntry `json:"errors"`
+	Name       string           `json:"name"`
+	QPS        []int            `json:"qps"`
+	Success    []int            `json:"success"`
+	Failed     []int            `json:"failed"`
+	AvgMs      []float64        `json:"avgMs"`
+	VarianceMs []int64          `json:"varianceMs"`
+	Errors     []errorCodeEntry `json:"errors,omitempty"`
 }
 
 type chartData struct {
@@ -110,9 +106,10 @@ type templateData struct {
 	SuccessReqs int
 	FailedReqs  int
 	AvgMs       float64
-	P50Ms       float64
-	P90Ms       float64
-	P99Ms       float64
+	VarianceMs  float64
+	// 数据大小
+	RawDataSizeStr string
+	ReportSizeStr  string
 	// 分 Case 统计
 	CaseStats []caseStat
 	// JSON（供 JS 读取）
@@ -122,6 +119,19 @@ type templateData struct {
 	OnlineUsersJSON template.JS      // 在线用户多系列 JSON，显示在 QPS 图前
 	MetricsSections []metricsSection // 其他指标（仅用于判断是否有非 online 指标）
 	MetricsJSON     template.JS      // 全部非 online_users 指标的 JSON，供 JS 动态渲染
+}
+
+func formatBytes(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	if n < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(n)/1024/1024)
 }
 
 func (g *EChartsHTMLGenerator) buildTemplateData(data *report.ReportData) *templateData {
@@ -135,6 +145,8 @@ func (g *EChartsHTMLGenerator) buildTemplateData(data *report.ReportData) *templ
 		ErrorCodesJSON:  template.JS(`[]`),
 		MetricsJSON:     template.JS(`null`),
 		OnlineUsersJSON: template.JS(`null`),
+		RawDataSizeStr:  formatBytes(data.Meta.RawDataSize),
+		ReportSizeStr:   formatBytes(data.Meta.ReportSize),
 	}
 
 	startTime := data.Meta.StartTime
@@ -154,99 +166,158 @@ func (g *EChartsHTMLGenerator) buildTemplateData(data *report.ReportData) *templ
 }
 
 func (g *EChartsHTMLGenerator) processTracings(td *templateData, records []*report.TracingRecord) {
-	td.TotalReqs = len(records)
+	td.TotalReqs = 0
 
-	// --- 按 case name 分组（保持出现顺序）---
+	// End 记录用于耗时/错误码统计；Start 记录用于 QPS
 	caseOrder := make([]string, 0)
 	caseRecords := make(map[string][]*report.TracingRecord)
+	caseStartBuckets := make(map[string]map[int64]int) // name -> ts -> start count
 	for _, r := range records {
+		if r == nil || r.Count <= 0 {
+			continue
+		}
+		if r.StartData {
+			if _, ok := caseStartBuckets[r.Name]; !ok {
+				caseStartBuckets[r.Name] = make(map[int64]int)
+			}
+			caseStartBuckets[r.Name][r.Timestamp] += r.Count
+			continue
+		}
 		if _, exists := caseRecords[r.Name]; !exists {
 			caseOrder = append(caseOrder, r.Name)
 		}
 		caseRecords[r.Name] = append(caseRecords[r.Name], r)
 	}
+	if len(caseOrder) == 0 {
+		return
+	}
 
 	// --- 全局统计 ---
-	allDurations := make([]int64, 0, len(records))
-	globalErrorCodes := make(map[string]int)
+	// TotalReqs 来自 Start 记录，耗时/错误码来自 End 记录
+	globalErrors := make(map[string]int)
 	var totalMs int64
-	for _, r := range records {
-		totalMs += r.DurationMs
-		allDurations = append(allDurations, r.DurationMs)
-		if r.Code == report.TracingSuccess {
-			td.SuccessReqs++
-		} else {
-			td.FailedReqs++
-			label := fmt.Sprintf("code_%d", r.Code)
-			if msg, ok := r.Extra["error"]; ok && msg != "" {
-				label = msg
-			}
-			globalErrorCodes[label]++
+	var totalEndCount int64
+	var totalVarianceSum int64
+	var varianceRecordCount int
+	for _, startMap := range caseStartBuckets {
+		for _, cnt := range startMap {
+			td.TotalReqs += cnt
 		}
 	}
-	if td.TotalReqs > 0 {
-		td.AvgMs = float64(totalMs) / float64(td.TotalReqs)
-		sort.Slice(allDurations, func(i, j int) bool { return allDurations[i] < allDurations[j] })
-		td.P50Ms = float64(percentile(allDurations, 50))
-		td.P90Ms = float64(percentile(allDurations, 90))
-		td.P99Ms = float64(percentile(allDurations, 99))
+	for _, r := range records {
+		if r == nil || r.StartData {
+			continue
+		}
+		totalEndCount += int64(r.Count)
+		totalMs += r.TotalDurationMs
+		totalVarianceSum += r.Variance
+		varianceRecordCount++
+		for code, cnt := range r.Code {
+			if code == int(report.TracingSuccess) {
+				td.SuccessReqs += cnt
+			} else {
+				td.FailedReqs += cnt
+			}
+		}
+		for msg, cnt := range r.Error {
+			globalErrors[msg] += cnt
+		}
+	}
+	if totalEndCount > 0 {
+		td.AvgMs = math.Round(float64(totalMs)/float64(totalEndCount)*10) / 10
+	}
+	if varianceRecordCount > 0 {
+		td.VarianceMs = float64(totalVarianceSum) / float64(varianceRecordCount)
 	}
 
 	// --- 分 Case 统计 ---
 	for _, name := range caseOrder {
 		recs := caseRecords[name]
-		cs := caseStat{Name: name, Total: len(recs)}
-		var csTotal int64
-		durs := make([]int64, 0, len(recs))
+		cs := caseStat{Name: name, MinMs: -1}
+		// Total 来自 Start 记录
+		for _, cnt := range caseStartBuckets[name] {
+			cs.Total += cnt
+		}
+		var csTotal, csVarianceSum int64
+		var csEndCount int
 		for _, r := range recs {
-			csTotal += r.DurationMs
-			durs = append(durs, r.DurationMs)
-			if r.Code == report.TracingSuccess {
-				cs.Success++
-			} else {
-				cs.Failed++
+			csEndCount += r.Count
+			csTotal += r.TotalDurationMs
+			csVarianceSum += r.Variance
+			for code, cnt := range r.Code {
+				if code == int(report.TracingSuccess) {
+					cs.Success += cnt
+				} else {
+					cs.Failed += cnt
+				}
+			}
+			if cs.MinMs < 0 || r.MinDurationMs < cs.MinMs {
+				cs.MinMs = r.MinDurationMs
+			}
+			if r.MaxDurationMs > cs.MaxMs {
+				cs.MaxMs = r.MaxDurationMs
 			}
 		}
-		sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
-		if len(durs) > 0 {
-			cs.AvgMs = math.Round(float64(csTotal)/float64(len(durs))*10) / 10
-			cs.P50Ms = percentile(durs, 50)
-			cs.P90Ms = percentile(durs, 90)
-			cs.P99Ms = percentile(durs, 99)
-			cs.MinMs = durs[0]
-			cs.MaxMs = durs[len(durs)-1]
+		if cs.MinMs < 0 {
+			cs.MinMs = 0
+		}
+		if csEndCount > 0 {
+			cs.AvgMs = math.Round(float64(csTotal)/float64(csEndCount)*10) / 10
+		}
+		if len(recs) > 0 {
+			cs.VarianceMs = csVarianceSum / int64(len(recs))
 		}
 		td.CaseStats = append(td.CaseStats, cs)
 	}
 
-	// --- 按秒聚合（每个 case 独立 bucket）---
+	// --- 按秒聚合构建图表数据 ---
 	type bucket struct {
-		success int
-		failed  int
-		totalMs int64
-		count   int
-		durs    []int64
+		qpsCount      int // 来自 Start 记录
+		endCount      int // 来自 End 记录，用于均値计算
+		success       int
+		failed        int
+		totalMs       int64
+		varianceSumMs int64
+		varianceCount int
 	}
 	allSecs := make(map[int64]bool)
 	caseBuckets := make(map[string]map[int64]*bucket)
 	for _, name := range caseOrder {
 		caseBuckets[name] = make(map[int64]*bucket)
 		for _, r := range caseRecords[name] {
-			sec := r.EndTime.Unix()
+			sec := r.Timestamp
 			allSecs[sec] = true
 			b := caseBuckets[name][sec]
 			if b == nil {
 				b = &bucket{}
 				caseBuckets[name][sec] = b
 			}
-			b.count++
-			b.totalMs += r.DurationMs
-			b.durs = append(b.durs, r.DurationMs)
-			if r.Code == report.TracingSuccess {
-				b.success++
-			} else {
-				b.failed++
+			b.endCount += r.Count
+			b.totalMs += r.TotalDurationMs
+			b.varianceSumMs += r.Variance
+			b.varianceCount++
+			for code, cnt := range r.Code {
+				if code == int(report.TracingSuccess) {
+					b.success += cnt
+				} else {
+					b.failed += cnt
+				}
 			}
+		}
+	}
+	// 用 Start 记录填充 QPS
+	for name, startMap := range caseStartBuckets {
+		if _, ok := caseBuckets[name]; !ok {
+			continue
+		}
+		for ts, cnt := range startMap {
+			allSecs[ts] = true
+			b := caseBuckets[name][ts]
+			if b == nil {
+				b = &bucket{}
+				caseBuckets[name][ts] = b
+			}
+			b.qpsCount += cnt
 		}
 	}
 
@@ -262,14 +333,12 @@ func (g *EChartsHTMLGenerator) processTracings(td *templateData, records []*repo
 	}
 	for _, name := range caseOrder {
 		sd := chartSeriesData{
-			Name:    name,
-			QPS:     make([]int, len(secs)),
-			Success: make([]int, len(secs)),
-			Failed:  make([]int, len(secs)),
-			AvgMs:   make([]float64, len(secs)),
-			P50Ms:   make([]int64, len(secs)),
-			P90Ms:   make([]int64, len(secs)),
-			P99Ms:   make([]int64, len(secs)),
+			Name:       name,
+			QPS:        make([]int, len(secs)),
+			Success:    make([]int, len(secs)),
+			Failed:     make([]int, len(secs)),
+			AvgMs:      make([]float64, len(secs)),
+			VarianceMs: make([]int64, len(secs)),
 		}
 		bm := caseBuckets[name]
 		for i, sec := range secs {
@@ -277,26 +346,21 @@ func (g *EChartsHTMLGenerator) processTracings(td *templateData, records []*repo
 			if b == nil {
 				continue
 			}
-			sd.QPS[i] = b.count
+			sd.QPS[i] = b.qpsCount
 			sd.Success[i] = b.success
 			sd.Failed[i] = b.failed
-			if b.count > 0 {
-				sd.AvgMs[i] = math.Round(float64(b.totalMs)/float64(b.count)*10) / 10
+			if b.endCount > 0 {
+				sd.AvgMs[i] = math.Round(float64(b.totalMs)/float64(b.endCount)*10) / 10
+				if b.varianceCount > 0 {
+					sd.VarianceMs[i] = b.varianceSumMs / int64(b.varianceCount)
+				}
 			}
-			sort.Slice(b.durs, func(a, c int) bool { return b.durs[a] < b.durs[c] })
-			sd.P50Ms[i] = percentile(b.durs, 50)
-			sd.P90Ms[i] = percentile(b.durs, 90)
-			sd.P99Ms[i] = percentile(b.durs, 99)
 		}
-		// 每个 case 独立的错误码统计（供 case 筛选下拉框过滤饼图）
+		// Case 错误汇总
 		caseErrs := make(map[string]int)
 		for _, r := range caseRecords[name] {
-			if r.Code != report.TracingSuccess {
-				label := fmt.Sprintf("code_%d", r.Code)
-				if msg, ok := r.Extra["error"]; ok && msg != "" {
-					label = msg
-				}
-				caseErrs[label]++
+			for msg, cnt := range r.Error {
+				caseErrs[msg] += cnt
 			}
 		}
 		for errLabel, cnt := range caseErrs {
@@ -308,9 +372,9 @@ func (g *EChartsHTMLGenerator) processTracings(td *templateData, records []*repo
 	cdJSON, _ := json.Marshal(cd)
 	td.ChartDataJSON = template.JS(cdJSON)
 
-	// --- 错误码 ---
-	errorCodes := make([]errorCodeEntry, 0, len(globalErrorCodes))
-	for label, cnt := range globalErrorCodes {
+	// --- 全局错误汇总 ---
+	errorCodes := make([]errorCodeEntry, 0, len(globalErrors))
+	for label, cnt := range globalErrors {
 		errorCodes = append(errorCodes, errorCodeEntry{Name: label, Value: cnt})
 	}
 	ecJSON, _ := json.Marshal(errorCodes)
@@ -426,13 +490,15 @@ func (g *EChartsHTMLGenerator) processMetrics(td *templateData, series []*report
 }
 
 // filterMetricPoints 返回 [startTime, endTime] 内的数据点；零值时间表示不限制该端。
+// start 截断到秒精度，避免纳秒级 StartTime 过滤掉恰好写在整秒的指标点。
 func filterMetricPoints(points []report.MetricsPoint, start, end time.Time) []report.MetricsPoint {
 	if start.IsZero() && end.IsZero() {
 		return points
 	}
+	startSec := start.Truncate(time.Second) // 指标时间点均截断到整秒，需同精度比较
 	result := make([]report.MetricsPoint, 0, len(points))
 	for _, p := range points {
-		if !start.IsZero() && p.Timestamp.Before(start) {
+		if !startSec.IsZero() && p.Timestamp.Before(startSec) {
 			continue
 		}
 		if !end.IsZero() && p.Timestamp.After(end) {
@@ -445,27 +511,27 @@ func filterMetricPoints(points []report.MetricsPoint, start, end time.Time) []re
 
 // buildChartsFromMetrics 当 tracings 为空时，从 cleaned tracing metrics重建图表和汇总表。
 // 依赖 CleanTracingsToMetrics 生成的 {case}_qps / _success_qps / _failed_qps /
-// _avg_ms / _p50_ms / _p90_ms / _p99_ms 系列。
+// _avg_ms / _variance_ms 系列。
 func (g *EChartsHTMLGenerator) buildChartsFromMetrics(td *templateData, series []*report.MetricsSeries, startTime, endTime time.Time) {
 	type caseTimeSeries struct {
-		qps      map[string]float64
-		successQ map[string]float64
-		failedQ  map[string]float64
-		avgMs    map[string]float64
-		p50Ms    map[string]float64
-		p90Ms    map[string]float64
-		p99Ms    map[string]float64
+		qps        map[string]float64
+		successQ   map[string]float64
+		failedQ    map[string]float64
+		avgMs      map[string]float64
+		varianceMs map[string]float64
+		minMs      map[string]float64
+		maxMs      map[string]float64
 	}
 	newCTS := func() *caseTimeSeries {
 		return &caseTimeSeries{
 			qps: make(map[string]float64), successQ: make(map[string]float64),
 			failedQ: make(map[string]float64), avgMs: make(map[string]float64),
-			p50Ms: make(map[string]float64), p90Ms: make(map[string]float64),
-			p99Ms: make(map[string]float64),
+			varianceMs: make(map[string]float64),
+			minMs:      make(map[string]float64), maxMs: make(map[string]float64),
 		}
 	}
 
-	knownSuffixes := []string{"_qps", "_success_qps", "_failed_qps", "_avg_ms", "_p50_ms", "_p90_ms", "_p99_ms", "_success_rate"}
+	knownSuffixes := []string{"_qps", "_success_qps", "_failed_qps", "_avg_ms", "_variance_ms", "_min_ms", "_max_ms", "_success_rate"}
 
 	caseOrder := make([]string, 0)
 	caseMap := make(map[string]*caseTimeSeries)
@@ -504,12 +570,12 @@ func (g *EChartsHTMLGenerator) buildChartsFromMetrics(td *templateData, series [
 				cts.failedQ[t] = pt.Value
 			case "_avg_ms":
 				cts.avgMs[t] = pt.Value
-			case "_p50_ms":
-				cts.p50Ms[t] = pt.Value
-			case "_p90_ms":
-				cts.p90Ms[t] = pt.Value
-			case "_p99_ms":
-				cts.p99Ms[t] = pt.Value
+			case "_variance_ms":
+				cts.varianceMs[t] = pt.Value
+			case "_min_ms":
+				cts.minMs[t] = pt.Value
+			case "_max_ms":
+				cts.maxMs[t] = pt.Value
 			}
 		}
 	}
@@ -534,18 +600,16 @@ func (g *EChartsHTMLGenerator) buildChartsFromMetrics(td *templateData, series [
 	for _, caseName := range caseOrder {
 		cts := caseMap[caseName]
 		sd := chartSeriesData{
-			Name:    caseName,
-			QPS:     make([]int, n),
-			Success: make([]int, n),
-			Failed:  make([]int, n),
-			AvgMs:   make([]float64, n),
-			P50Ms:   make([]int64, n),
-			P90Ms:   make([]int64, n),
-			P99Ms:   make([]int64, n),
+			Name:       caseName,
+			QPS:        make([]int, n),
+			Success:    make([]int, n),
+			Failed:     make([]int, n),
+			AvgMs:      make([]float64, n),
+			VarianceMs: make([]int64, n),
 		}
 		var totalReqs, totalSuccess, totalFailed int
 		var sumAvg float64
-		var sumP50, sumP90, sumP99 int64
+		var sumVariance int64
 		var cntP int
 		for t, i := range timeIdx {
 			q := int(math.Round(cts.qps[t]))
@@ -555,29 +619,36 @@ func (g *EChartsHTMLGenerator) buildChartsFromMetrics(td *templateData, series [
 			sd.Success[i] = succ
 			sd.Failed[i] = fail
 			sd.AvgMs[i] = math.Round(cts.avgMs[t]*10) / 10
-			sd.P50Ms[i] = int64(math.Round(cts.p50Ms[t]))
-			sd.P90Ms[i] = int64(math.Round(cts.p90Ms[t]))
-			sd.P99Ms[i] = int64(math.Round(cts.p99Ms[t]))
+			sd.VarianceMs[i] = int64(math.Round(cts.varianceMs[t]))
 			totalReqs += q
 			totalSuccess += succ
 			totalFailed += fail
 			if q > 0 {
 				sumAvg += cts.avgMs[t] * float64(q)
-				sumP50 += int64(math.Round(cts.p50Ms[t]))
-				sumP90 += int64(math.Round(cts.p90Ms[t]))
-				sumP99 += int64(math.Round(cts.p99Ms[t]))
+				sumVariance += int64(math.Round(cts.varianceMs[t]))
 				cntP++
 			}
 		}
 		cd.Series = append(cd.Series, sd)
 
 		// 构建汇总表行（基于每秒指标近似计算）
-		cs := caseStat{Name: caseName, Total: totalReqs, Success: totalSuccess, Failed: totalFailed}
+		cs := caseStat{Name: caseName, Total: totalReqs, Success: totalSuccess, Failed: totalFailed, MinMs: -1}
 		if cntP > 0 {
 			cs.AvgMs = math.Round(sumAvg/float64(totalReqs)*10) / 10
-			cs.P50Ms = sumP50 / int64(cntP)
-			cs.P90Ms = sumP90 / int64(cntP)
-			cs.P99Ms = sumP99 / int64(cntP)
+			cs.VarianceMs = sumVariance / int64(cntP)
+		}
+		for _, v := range cts.minMs {
+			if v > 0 && (cs.MinMs < 0 || int64(v) < cs.MinMs) {
+				cs.MinMs = int64(v)
+			}
+		}
+		if cs.MinMs < 0 {
+			cs.MinMs = 0
+		}
+		for _, v := range cts.maxMs {
+			if int64(v) > cs.MaxMs {
+				cs.MaxMs = int64(v)
+			}
 		}
 		td.CaseStats = append(td.CaseStats, cs)
 		td.TotalReqs += totalReqs
@@ -585,22 +656,17 @@ func (g *EChartsHTMLGenerator) buildChartsFromMetrics(td *templateData, series [
 		td.FailedReqs += totalFailed
 	}
 
-	// 全局延迟近似：取各 case 加权平均
+	// 全局延迟：取各 case 加权平均
 	if td.TotalReqs > 0 {
-		var wAvg float64
-		var wP50, wP90, wP99 float64
+		var wAvg, wVariance float64
 		for _, cs := range td.CaseStats {
 			w := float64(cs.Total)
 			wAvg += cs.AvgMs * w
-			wP50 += float64(cs.P50Ms) * w
-			wP90 += float64(cs.P90Ms) * w
-			wP99 += float64(cs.P99Ms) * w
+			wVariance += float64(cs.VarianceMs) * w
 		}
 		total := float64(td.TotalReqs)
 		td.AvgMs = math.Round(wAvg/total*10) / 10
-		td.P50Ms = math.Round(wP50/total*10) / 10
-		td.P90Ms = math.Round(wP90/total*10) / 10
-		td.P99Ms = math.Round(wP99/total*10) / 10
+		td.VarianceMs = math.Round(wVariance/total*10) / 10
 	}
 
 	cdJSON, _ := json.Marshal(cd)
@@ -743,20 +809,18 @@ table.st tr:hover{background:#f5f5ff}
   <div class="cards">
     <div class="cd"><div class="lb">总请求</div><div class="vl inf">{{.TotalReqs}}</div></div>
     <div class="cd"><div class="lb">成功</div><div class="vl ok">{{.SuccessReqs}}</div></div>
-    <div class="cd"><div class="lb">失败</div><div class="vl fl">{{.FailedReqs}}</div></div>
-    <div class="cd"><div class="lb">Avg</div><div class="vl">{{printf "%.1f" .AvgMs}} ms</div></div>
-    <div class="cd"><div class="lb">P50</div><div class="vl">{{printf "%.0f" .P50Ms}} ms</div></div>
-    <div class="cd"><div class="lb">P90</div><div class="vl">{{printf "%.0f" .P90Ms}} ms</div></div>
-    <div class="cd"><div class="lb">P99</div><div class="vl">{{printf "%.0f" .P99Ms}} ms</div></div>
+    <div class="cd"><div class="lb">失败</div><div class="vl fl">{{.FailedReqs}}</div></div>{{if .RawDataSizeStr}}
+    <div class="cd"><div class="lb">原始数据</div><div class="vl" style="font-size:18px">{{.RawDataSizeStr}}</div></div>{{end}}{{if .ReportSizeStr}}
+    <div class="cd"><div class="lb">报告大小</div><div class="vl" style="font-size:18px">{{.ReportSizeStr}}</div></div>{{end}}
   </div>
 
   {{if .CaseStats}}
   <div class="stit">分 Case 统计</div>
   <div class="bx">
     <table class="st">
-      <thead><tr><th>Case</th><th>Total</th><th>Success</th><th>Failed</th><th>Avg(ms)</th><th>P50(ms)</th><th>P90(ms)</th><th>P99(ms)</th><th>Min(ms)</th><th>Max(ms)</th></tr></thead>
+      <thead><tr><th>Case</th><th>Total</th><th>Success</th><th>Failed</th><th>Avg(ms)</th><th>Var(ms²)</th><th>Min(ms)</th><th>Max(ms)</th></tr></thead>
       <tbody>{{range .CaseStats}}
-      <tr><td>{{.Name}}</td><td>{{.Total}}</td><td style="color:#52c41a">{{.Success}}</td><td style="color:#f5222d">{{.Failed}}</td><td>{{printf "%.1f" .AvgMs}}</td><td>{{.P50Ms}}</td><td>{{.P90Ms}}</td><td>{{.P99Ms}}</td><td>{{.MinMs}}</td><td>{{.MaxMs}}</td></tr>{{end}}
+      <tr><td>{{.Name}}</td><td>{{.Total}}</td><td style="color:#52c41a">{{.Success}}</td><td style="color:#f5222d">{{.Failed}}</td><td>{{printf "%.1f" .AvgMs}}</td><td>{{.VarianceMs}}</td><td>{{.MinMs}}</td><td>{{.MaxMs}}</td></tr>{{end}}
       </tbody>
     </table>
   </div>
@@ -777,7 +841,7 @@ table.st tr:hover{background:#f5f5ff}
   <div class="stit">QPS 时间曲线 (点击图例切换显示)</div>
   <div class="bx"><div class="ct" id="c_qps"></div></div>
 
-  <div class="stit">延迟分位数 P50 / P90 / P99 (点击图例切换显示)</div>
+  <div class="stit">延迟方差 (ms²，点击图例切换显示)</div>
   <div class="bx"><div class="ct" id="c_lat"></div></div>
 
   <div class="stit">成功 / 失败趋势</div>
@@ -855,21 +919,18 @@ function renderCharts(caseName){
     series:qS
   });
 
-  // ---- 延迟 P50/P90/P99 ----
+  // ---- 延迟方差 ----
   var lS=[];
   fs.forEach(function(s){
     var i=D.series.indexOf(s);
-    var bc=C[i%C.length];
-    lS.push({name:s.name+' P50',type:'line',smooth:true,data:s.p50Ms,lineStyle:{width:1},itemStyle:{color:bc},emphasis:{focus:'series'}});
-    lS.push({name:s.name+' P90',type:'line',smooth:true,data:s.p90Ms,lineStyle:{width:2,type:'dashed'},itemStyle:{color:bc},emphasis:{focus:'series'}});
-    lS.push({name:s.name+' P99',type:'line',smooth:true,data:s.p99Ms,lineStyle:{width:2,type:'dotted'},itemStyle:{color:bc},emphasis:{focus:'series'}});
+    lS.push({name:s.name,type:'line',smooth:true,data:s.varianceMs,lineStyle:{width:1.5},itemStyle:{color:C[i%C.length]},emphasis:{focus:'series'}});
   });
   mk('c_lat',{
     tooltip:{trigger:'axis'},
     legend:{data:lS.map(function(s){return s.name;}),top:0,type:'scroll',selectedMode:'multiple'},
     grid:{top:45,bottom:35,left:55,right:20},
     xAxis:{type:'category',data:D.timeLabels,axisLabel:{rotate:30,fontSize:11}},
-    yAxis:{type:'value',name:'ms'},
+    yAxis:{type:'value',name:'ms²'},
     series:lS
   });
 

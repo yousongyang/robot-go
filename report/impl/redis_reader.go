@@ -55,6 +55,7 @@ func (r *RedisReportReader) ReadReport(reportID string) (*report.ReportData, err
 			rd.Tracings = append(rd.Tracings, records...)
 		}
 	}
+	rd.Tracings = report.CompactTracingsBySecond(rd.Tracings)
 
 	// Metrics
 	metricsKeys, err := scanKeys(ctx, r.client, fmt.Sprintf("report:metrics:%s:*", reportID))

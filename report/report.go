@@ -4,15 +4,18 @@ import "time"
 
 // ReportMeta 报表元数据
 type ReportMeta struct {
-	ReportID  string            `json:"report_id"`
-	Title     string            `json:"title"`
-	StartTime time.Time         `json:"start_time"`
-	EndTime   time.Time         `json:"end_time"`
-	AgentIDs  []string          `json:"agent_ids"`
-	Tags      map[string]string `json:"tags,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	ReportID  string    `json:"report_id"`
+	Title     string    `json:"title"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+	AgentIDs  []string  `json:"agent_ids"`
+	CreatedAt time.Time `json:"created_at"`
 	// ExpiresAt 自动过期时间；零值表示永不过期
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// RawDataSize 原始打点+指标数据 JSON 序列化大小（字节），近似 Redis 占用
+	RawDataSize int64 `json:"raw_data_size,omitempty"`
+	// ReportSize 生成的 HTML 报告文件大小（字节）；首次生成后更新
+	ReportSize int64 `json:"report_size,omitempty"`
 }
 
 // ReportData 一次报表的完整原始数据

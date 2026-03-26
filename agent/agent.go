@@ -329,10 +329,11 @@ func (a *Agent) flushPartialData(reportID string, caseName string, tracer *repor
 		}
 	}
 
+	var metricsData []*report.MetricsSeries
+
 	// 使用 FlushSnapshots 只取增量快照，避免 partial flush 重复写入已提交数据
 	snapshots := pressure.FlushSnapshots()
 	if len(snapshots) > 0 {
-		var metricsData []*report.MetricsSeries
 		var pressurePts, throttlePts, actualQPSPts []report.MetricsPoint
 		for _, s := range snapshots {
 			pressurePts = append(pressurePts, report.MetricsPoint{Timestamp: s.Timestamp, Value: float64(s.Level)})
@@ -344,6 +345,19 @@ func (a *Agent) flushPartialData(reportID string, caseName string, tracer *repor
 			&report.MetricsSeries{Name: "throttle_ratio", Labels: map[string]string{"agent": a.cfg.AgentID, "case": caseName}, Points: throttlePts},
 			&report.MetricsSeries{Name: "actual_qps", Labels: map[string]string{"agent": a.cfg.AgentID, "case": caseName}, Points: actualQPSPts},
 		)
+	}
+
+	// online_users 增量 flush：每5秒写入一次，中间报告可看到实时在线人数
+	onlineSeries := a.onlineMetrics.Flush()
+	for _, s := range onlineSeries {
+		if s.Labels == nil {
+			s.Labels = make(map[string]string)
+		}
+		s.Labels["agent"] = a.cfg.AgentID
+		metricsData = append(metricsData, s)
+	}
+
+	if len(metricsData) > 0 {
 		if err := a.writer.WriteMetrics(reportID, metricsData); err != nil {
 			log.Printf("[Agent] partial flush metrics error: %v", err)
 		}

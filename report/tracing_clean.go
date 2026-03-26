@@ -6,108 +6,89 @@ import (
 	"time"
 )
 
-// CleanTracingsToMetrics 将原始打点记录按 case 名称分组，逐秒聚合为标准 MetricsSeries。
-// 对每个 caseName 生成:
+// CleanTracingsToMetrics 将已按秒聚合的打点记录转为标准 MetricsSeries。
+// QPS 系列使用 StartRecord（r.StartData=true），耗时/错误码/成功率使用 EndRecord，对每个 caseName 生成:
 //
 //	{name}_qps, {name}_success_qps, {name}_failed_qps,
-//	{name}_avg_ms, {name}_p50_ms, {name}_p90_ms, {name}_p99_ms, {name}_success_rate
+//	{name}_avg_ms, {name}_variance_ms, {name}_min_ms, {name}_max_ms, {name}_success_rate
 func CleanTracingsToMetrics(records []*TracingRecord) []*MetricsSeries {
 	if len(records) == 0 {
 		return nil
 	}
 
 	nameOrder := make([]string, 0)
-	grouped := make(map[string][]*TracingRecord)
+	nameSet := make(map[string]bool)
+	startGrouped := make(map[string][]*TracingRecord)
+	endGrouped := make(map[string][]*TracingRecord)
 	for _, r := range records {
-		if _, exists := grouped[r.Name]; !exists {
+		if r == nil || r.Count <= 0 {
+			continue
+		}
+		if !nameSet[r.Name] {
+			nameSet[r.Name] = true
 			nameOrder = append(nameOrder, r.Name)
 		}
-		grouped[r.Name] = append(grouped[r.Name], r)
+		if r.StartData {
+			startGrouped[r.Name] = append(startGrouped[r.Name], r)
+		} else {
+			endGrouped[r.Name] = append(endGrouped[r.Name], r)
+		}
+	}
+
+	if len(nameOrder) == 0 {
+		return nil
 	}
 
 	var result []*MetricsSeries
 
 	for _, name := range nameOrder {
-		recs := grouped[name]
-
-		type bucket struct {
-			success int
-			failed  int
-			totalMs int64
-			durs    []int64
-		}
-		buckets := make(map[int64]*bucket)
-		for _, r := range recs {
-			sec := r.EndTime.Unix()
-			b := buckets[sec]
-			if b == nil {
-				b = &bucket{}
-				buckets[sec] = b
-			}
-			b.totalMs += r.DurationMs
-			b.durs = append(b.durs, r.DurationMs)
-			if r.Code == TracingSuccess {
-				b.success++
-			} else {
-				b.failed++
-			}
-		}
-
-		secs := make([]int64, 0, len(buckets))
-		for s := range buckets {
-			secs = append(secs, s)
-		}
-		sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
-
 		labels := map[string]string{"case": name}
 		qpsSeries := &MetricsSeries{Name: name + "_qps", Labels: labels}
 		successQPSSeries := &MetricsSeries{Name: name + "_success_qps", Labels: labels}
 		failedQPSSeries := &MetricsSeries{Name: name + "_failed_qps", Labels: labels}
 		avgSeries := &MetricsSeries{Name: name + "_avg_ms", Labels: labels}
-		p50Series := &MetricsSeries{Name: name + "_p50_ms", Labels: labels}
-		p90Series := &MetricsSeries{Name: name + "_p90_ms", Labels: labels}
-		p99Series := &MetricsSeries{Name: name + "_p99_ms", Labels: labels}
+		varianceSeries := &MetricsSeries{Name: name + "_variance_ms", Labels: labels}
+		minMsSeries := &MetricsSeries{Name: name + "_min_ms", Labels: labels}
+		maxMsSeries := &MetricsSeries{Name: name + "_max_ms", Labels: labels}
 		rateSeries := &MetricsSeries{Name: name + "_success_rate", Labels: labels}
 
-		for _, sec := range secs {
-			b := buckets[sec]
-			ts := time.Unix(sec, 0)
-			total := b.success + b.failed
+		// QPS 来自 Start 记录
+		startRecs := startGrouped[name]
+		sort.Slice(startRecs, func(i, j int) bool { return startRecs[i].Timestamp < startRecs[j].Timestamp })
+		for _, r := range startRecs {
+			ts := time.Unix(r.Timestamp, 0)
+			qpsSeries.Points = append(qpsSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(r.Count)})
+		}
 
-			sort.Slice(b.durs, func(i, j int) bool { return b.durs[i] < b.durs[j] })
-			avg := float64(b.totalMs) / float64(total)
+		// 耗时/错误码来自 End 记录
+		endRecs := endGrouped[name]
+		sort.Slice(endRecs, func(i, j int) bool { return endRecs[i].Timestamp < endRecs[j].Timestamp })
+		for _, r := range endRecs {
+			ts := time.Unix(r.Timestamp, 0)
+			total := r.Count
+			successCount := r.Code[int(TracingSuccess)]
+			failed := total - successCount
 
-			qpsSeries.Points = append(qpsSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(total)})
-			successQPSSeries.Points = append(successQPSSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(b.success)})
-			failedQPSSeries.Points = append(failedQPSSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(b.failed)})
-			avgSeries.Points = append(avgSeries.Points, MetricsPoint{Timestamp: ts, Value: math.Round(avg*10) / 10})
-			p50Series.Points = append(p50Series.Points, MetricsPoint{Timestamp: ts, Value: float64(pct(b.durs, 50))})
-			p90Series.Points = append(p90Series.Points, MetricsPoint{Timestamp: ts, Value: float64(pct(b.durs, 90))})
-			p99Series.Points = append(p99Series.Points, MetricsPoint{Timestamp: ts, Value: float64(pct(b.durs, 99))})
-
-			rate := 0.0
+			avg := float64(0)
 			if total > 0 {
-				rate = math.Round(float64(b.success)/float64(total)*10000) / 100
+				avg = math.Round(float64(r.TotalDurationMs)/float64(total)*10) / 10
 			}
+			rate := float64(0)
+			if total > 0 {
+				rate = math.Round(float64(successCount)/float64(total)*10000) / 100
+			}
+
+			successQPSSeries.Points = append(successQPSSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(successCount)})
+			failedQPSSeries.Points = append(failedQPSSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(failed)})
+			avgSeries.Points = append(avgSeries.Points, MetricsPoint{Timestamp: ts, Value: avg})
+			varianceSeries.Points = append(varianceSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(r.Variance)})
+			minMsSeries.Points = append(minMsSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(r.MinDurationMs)})
+			maxMsSeries.Points = append(maxMsSeries.Points, MetricsPoint{Timestamp: ts, Value: float64(r.MaxDurationMs)})
 			rateSeries.Points = append(rateSeries.Points, MetricsPoint{Timestamp: ts, Value: rate})
 		}
 
-		result = append(result, qpsSeries, successQPSSeries, failedQPSSeries, avgSeries, p50Series, p90Series, p99Series, rateSeries)
+		result = append(result, qpsSeries, successQPSSeries, failedQPSSeries, avgSeries, varianceSeries, minMsSeries, maxMsSeries, rateSeries)
 	}
 
 	return result
-}
-
-func pct(sorted []int64, p int) int64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := int(math.Ceil(float64(p)/100*float64(len(sorted)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return sorted[idx]
 }
