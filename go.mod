@@ -3,7 +3,7 @@ module github.com/atframework/robot-go
 go 1.25.1
 
 require (
-	github.com/atframework/atframe-utils-go v1.0.3
+	github.com/atframework/atframe-utils-go v1.0.4-0.20260409095214-e5bcad272063
 	github.com/chzyer/readline v1.5.1
 	github.com/golang/snappy v0.0.4
 	github.com/google/flatbuffers v25.12.19+incompatible
