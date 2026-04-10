@@ -2,6 +2,8 @@
 
 通用的 Go 语言机器人测试客户端框架，提供 WebSocket 连接管理、交互式命令行、任务调度和批量用例执行等基础设施，用于模拟用户与服务器的交互。
 
+[示例报告](https://atframework.github.io/robot-go/template_report.html)
+
 ## 模块结构
 
 ```
@@ -422,6 +424,8 @@ run-case-stress <caseName> <errorBreak> <openIdPrefix> <idStart> <idEnd> <batchC
 ```
 
 ## 报告系统
+
+[示例报告](https://atframework.github.io/robot-go/template_report.html)
 
 ### 数据存储
 
