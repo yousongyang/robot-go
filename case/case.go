@@ -1,10 +1,8 @@
 package atsf4g_go_robot_case
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"runtime"
@@ -31,12 +29,7 @@ var (
 )
 
 func init() {
-	utils.RegisterCommand([]string{"run-case"}, CmdRunCase, "<case name> <openid-prefix> <user-count> <batch-count> <run-time> <args>", "运行用例", AutoCompleteCaseName, 0)
 	utils.RegisterCommand([]string{"run-case-file"}, CmdRunCaseFile, "<file> <repeated_time>", "运行用例文件", AutoCompleteCaseName, 0)
-}
-
-func CmdRunCase(task base.TaskActionImpl, cmd []string) string {
-	return RunCase(task, cmd, 0, time.Now())
 }
 
 func CmdRunCaseFile(task base.TaskActionImpl, cmd []string) string {
@@ -48,7 +41,7 @@ func CmdRunCaseFile(task base.TaskActionImpl, cmd []string) string {
 		return err.Error()
 	}
 
-	if runErr := RunCaseFile(cmd[0], int32(repeatedTime)); runErr != nil {
+	if runErr := RunCaseFileStandAlone(cmd[0], int32(repeatedTime)); runErr != nil {
 		return runErr.Error()
 	}
 	return ""
@@ -115,128 +108,51 @@ func runCaseWait(pendingCase []chan string) error {
 	return nil
 }
 
-func RunCaseFile(caseFile string, repeatedTime int32) error {
-	file, err := os.Open(caseFile)
+func RunCaseFileStandAlone(caseFile string, repeatedTime int32) error {
+	content, err := os.ReadFile(caseFile)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	beginTime := time.Now()
+	lines, err := ParseCaseFileContent(string(content), CaseFileModeStandalone)
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return nil
+	}
 
-	for index := int32(0); index < repeatedTime; index++ {
-		utils.StdoutLog(fmt.Sprintf("Run Case File: %s, Repeated Time: %d/%d", caseFile, index+1, repeatedTime))
-		if _, err = file.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		scanner := bufio.NewScanner(file)
-		var caseIndex int32 = 0
+	for round := int32(0); round < repeatedTime; round++ {
+		utils.StdoutLog(fmt.Sprintf("Run Case File: %s, Repeated Time: %d/%d", caseFile, round+1, repeatedTime))
+
 		var pendingCase []chan string
-		for scanner.Scan() {
-			line := scanner.Text()
-			if idx := strings.Index(line, "#"); idx >= 0 {
-				line = line[:idx]
-			}
-			line = strings.TrimSpace(line)
-			if len(line) == 0 {
+		for _, line := range lines {
+			if line.IsControl {
+				// 本地模式 控制行不执行，直接跳过
 				continue
 			}
 
-			args := strings.Fields(line)
-			if len(args) == 0 {
-				continue
-			}
-
-			batchPending := false
-			if strings.ToLower(args[len(args)-1]) == "&" {
-				args = args[:len(args)-1]
-				batchPending = true
-			}
-
-			if len(args) == 0 {
-				continue
-			}
-
-			caseIndex++
-			currentCaseIndex := caseIndex
-
+			params := line.Stress
 			waitingChan := make(chan string, 1)
-			lineArgs := args
-			go func() {
-				waitingChan <- RunCase(nil, lineArgs, currentCaseIndex, beginTime)
-			}()
+			go func(p Params) {
+				waitingChan <- RunCaseInner(context.Background(), p, nil, nil, true, true)
+			}(params)
 			pendingCase = append(pendingCase, waitingChan)
 
-			if batchPending {
-				continue
-			} else {
-				err = runCaseWait(pendingCase)
-				if err != nil {
+			if !line.Background {
+				if err := runCaseWait(pendingCase); err != nil {
 					return err
 				}
 				pendingCase = pendingCase[:0]
 			}
 		}
 
-		err = runCaseWait(pendingCase)
-		if err != nil {
-			return err
-		}
-
-		if err := scanner.Err(); err != nil {
+		if err := runCaseWait(pendingCase); err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-func RunCase(_ base.TaskActionImpl, cmd []string, caseIndex int32, beginTime time.Time) string {
-	if len(cmd) < 6 {
-		return "Args Error"
-	}
-
-	caseName := cmd[0]
-	openIdPrefix := cmd[1]
-	if openIdPrefix == "" {
-		return "OpenId Prefix Empty"
-	}
-
-	userCount, err := strconv.ParseInt(cmd[2], 10, 32)
-	if err != nil {
-		return err.Error()
-	}
-	if userCount <= 0 {
-		return "User Count Must Greater Than 0"
-	}
-
-	tps, err := strconv.ParseInt(cmd[3], 10, 32)
-	if err != nil {
-		return err.Error()
-	}
-
-	userBatchCount, err := strconv.ParseInt(cmd[4], 10, 32)
-	if err != nil {
-		return err.Error()
-	}
-
-	runTime, err := strconv.ParseInt(cmd[5], 10, 32)
-	if err != nil {
-		return err.Error()
-	}
-
-	return RunCaseInner(context.Background(), Params{
-		CaseName:       caseName,
-		CaseIndex:      int(caseIndex),
-		ErrorBreak:     true,
-		OpenIDPrefix:   openIdPrefix,
-		OpenIDStart:    0,
-		OpenIDEnd:      userCount,
-		TargetQPS:      float64(tps),
-		RunTime:        runTime,
-		UserBatchCount: userBatchCount,
-		ExtraArgs:      cmd[6:],
-	}, nil, nil, true, true)
 }
 
 func RunCaseInner(

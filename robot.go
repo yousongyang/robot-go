@@ -159,7 +159,7 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 			}
 			repeatedTime = int32(temp)
 		}
-		err := robot_case.RunCaseFile(caseFile, repeatedTime)
+		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime)
 		if err != nil {
 			fmt.Println("Run case file error:", err)
 			log.CloseAllLogWriters()

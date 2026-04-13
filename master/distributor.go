@@ -1,7 +1,6 @@
 package master
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,18 +19,19 @@ import (
 
 // distributeAndWait 解析 case 文件、按行分发给 Agent 并等待全部完成。
 // targetGroup 为空时分发给所有在线 Agent；distributeMode 为 "copy" 或 "balance"。
-// rebootBefore=true 时将在分发正式任务前先向所有目标 Agent 发送 Reboot 命令。
+// rebootBefore=true 时将在分发正式任务前先向所有目标 Agent 发送 @reboot 控制指令。
 func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string, rebootBefore bool) error {
-	// 先 Reboot 目标 Agent（如果需要）
+	// 先 Reboot 目标 Agent（如果需要）——通过控制指令框架执行
 	if rebootBefore {
 		log.Printf("[Master] Rebooting agents before task %s", reportID)
-		if err := m.rebootAgents(ctx, targetGroup, targetAgents); err != nil {
+		rebootCP := robot_case.ControlParams{Name: "reboot", ErrorBreak: false}
+		if err := m.distributeControlInstruction(ctx, reportID, 0, rebootCP, targetGroup, targetAgents); err != nil {
 			log.Printf("[Master] Reboot agents warning: %v", err)
 		}
 	}
 
-	// 解析 case 文件
-	err, lines := parseCaseContent(caseFileContent)
+	// 解析 case 文件（统一解析控制指令 + 压测行）
+	lines, err := robot_case.ParseCaseFileContent(caseFileContent, robot_case.CaseFileModeDistributed)
 	if err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 	}
 
 	for round := 0; round < repeatedTime; round++ {
-		for i, params := range lines {
+		for i, line := range lines {
 			// 检查是否已取消
 			select {
 			case <-ctx.Done():
@@ -49,13 +49,29 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 			}
 
 			caseIndex := round*len(lines) + i
-			if err := m.distributeSingleCase(ctx, reportID, caseIndex, params, targetGroup, targetAgents, distributeMode); err != nil {
-				if params.ErrorBreak {
-					return fmt.Errorf("case[%d] %s: %w", caseIndex, params.CaseName, err)
+
+			if line.IsControl {
+				cp := line.Control
+				cp.CaseIndex = caseIndex
+				if err := m.distributeControlInstruction(ctx, reportID, caseIndex, cp, targetGroup, targetAgents); err != nil {
+					if cp.ErrorBreak {
+						return fmt.Errorf("control[%d] @%s: %w", caseIndex, cp.Name, err)
+					}
+					log.Printf("[Master] Control[%d] @%s round=%d completed with errors (ErrorBreak=false, continuing): %v", caseIndex, cp.Name, round, err)
+				} else {
+					log.Printf("[Master] Control[%d] @%s round=%d completed", caseIndex, cp.Name, round)
 				}
-				log.Printf("[Master] Case[%d] %s round=%d completed with errors (ErrorBreak=false, continuing): %v", caseIndex, params.CaseName, round, err)
 			} else {
-				log.Printf("[Master] Case[%d] %s round=%d completed", caseIndex, params.CaseName, round)
+				params := line.Stress
+				params.CaseIndex = caseIndex
+				if err := m.distributeSingleCase(ctx, reportID, caseIndex, params, targetGroup, targetAgents, distributeMode); err != nil {
+					if params.ErrorBreak {
+						return fmt.Errorf("case[%d] %s: %w", caseIndex, params.CaseName, err)
+					}
+					log.Printf("[Master] Case[%d] %s round=%d completed with errors (ErrorBreak=false, continuing): %v", caseIndex, params.CaseName, round, err)
+				} else {
+					log.Printf("[Master] Case[%d] %s round=%d completed", caseIndex, params.CaseName, round)
+				}
 			}
 		}
 	}
@@ -177,9 +193,61 @@ func (m *Master) distributeSingleCase(ctx context.Context, reportID string, case
 	return nil
 }
 
-// rebootAgents 向目标 Agent 发送 Reboot 任务并等待所有 Agent 响应。
-// 若指定了 targetAgents，则只 Reboot 这些 Agent；否则按 targetGroup 过滤（空 = 全部在线 Agent）。
-func (m *Master) rebootAgents(ctx context.Context, targetGroup string, targetAgents []string) error {
+// distributeControlInstruction 将控制指令分发给 Agent 并等待完成。
+// 根据控制指令的 DispatchMode 决定分发策略：
+//   - ControlDispatchAll: 所有目标 Agent 都执行
+//   - ControlDispatchRandom: 随机选择一个 Agent 执行
+func (m *Master) distributeControlInstruction(ctx context.Context, reportID string, caseIndex int, cp robot_case.ControlParams, targetGroup string, targetAgents []string) error {
+	agents := m.selectOnlineAgents(targetGroup, targetAgents)
+	if len(agents) == 0 {
+		return nil
+	}
+
+	// 根据注册的 DispatchMode 决定分发给哪些 Agent
+	action := robot_case.GetControlAction(cp.Name)
+	if action != nil && action.DispatchMode == robot_case.ControlDispatchRandom {
+		// 完全随机选一个
+		idx := time.Now().UnixNano() % int64(len(agents))
+		agents = []*agentInfo{agents[idx]}
+	}
+
+	stamp := time.Now().Format("20060102-150405")
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(agents))
+	for _, agent := range agents {
+		taskKey := fmt.Sprintf("control/%s/%d/%s/%s", stamp, caseIndex, cp.Name, agent.ID)
+		task := &robot_case.AgentTask{
+			TaskType:      "control",
+			TaskKey:       taskKey,
+			ReportID:      reportID,
+			CaseIndex:     caseIndex,
+			ControlParams: cp,
+			EnableLog:     false,
+		}
+		wg.Add(1)
+		go func(a *agentInfo, t *robot_case.AgentTask) {
+			defer wg.Done()
+			if err := m.enqueueAgentTask(ctx, a, t); err != nil {
+				errCh <- fmt.Errorf("control @%s agent %s: %w", cp.Name, a.ID, err)
+			}
+		}(agent, task)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	log.Printf("[Master] Control @%s completed on %d agent(s)", cp.Name, len(agents))
+	return nil
+}
+
+// selectOnlineAgents 按 targetGroup/targetAgents 过滤在线 Agent
+func (m *Master) selectOnlineAgents(targetGroup string, targetAgents []string) []*agentInfo {
 	agentSet := make(map[string]struct{}, len(targetAgents))
 	for _, id := range targetAgents {
 		agentSet[id] = struct{}{}
@@ -200,41 +268,7 @@ func (m *Master) rebootAgents(ctx context.Context, targetGroup string, targetAge
 		}
 	}
 	m.mu.RUnlock()
-
-	if len(agents) == 0 {
-		return nil
-	}
-
-	stamp := time.Now().Format("20060102-150405")
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(agents))
-	for _, agent := range agents {
-		taskKey := fmt.Sprintf("reboot/%s/%s", stamp, agent.ID)
-		task := &robot_case.AgentTask{
-			TaskType:  "reboot",
-			TaskKey:   taskKey,
-			EnableLog: false,
-		}
-		wg.Add(1)
-		go func(a *agentInfo, t *robot_case.AgentTask) {
-			defer wg.Done()
-			if err := m.enqueueAgentTask(ctx, a, t); err != nil {
-				errCh <- fmt.Errorf("reboot agent %s: %w", a.ID, err)
-			}
-		}(agent, task)
-	}
-	wg.Wait()
-	close(errCh)
-
-	var errs []string
-	for err := range errCh {
-		errs = append(errs, err.Error())
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	log.Printf("[Master] Rebooted %d agent(s)", len(agents))
-	return nil
+	return agents
 }
 
 // enqueueAgentTask 将任务放入 agent 的内存队列，并阻塞到 agent 执行完成后返回。
@@ -348,40 +382,6 @@ func (m *Master) aggregateAndGenerate(reportID string) error {
 
 	log.Printf("[Master] Report generated: %s", htmlPath)
 	return nil
-}
-
-// parseCaseContent 解析 case 文件内容，返回 (是否 stress, 各行参数)。
-func parseCaseContent(content string) (error, []robot_case.Params) {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-
-	var lines []robot_case.Params
-	for scanner.Scan() {
-		raw := scanner.Text()
-		// 去注释
-		if idx := strings.Index(raw, "#"); idx >= 0 {
-			raw = raw[:idx]
-		}
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-
-		args := strings.Fields(line)
-		if strings.ToLower(args[len(args)-1]) == "&" {
-			args = args[:len(args)-1]
-		}
-		if len(args) == 0 {
-			continue
-		}
-
-		params, err := robot_case.ParseStressLine(args)
-		if err != nil {
-			return err, nil
-		}
-		params.CaseIndex = len(lines)
-		lines = append(lines, params)
-	}
-	return nil, lines
 }
 
 // RegisterAgentFromRedis 从 Redis 恢复已注册的 Agent

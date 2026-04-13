@@ -139,8 +139,8 @@ func (a *Agent) pollTask() (*robot_case.AgentTask, error) {
 // executeTask 执行一个任务。若 TaskType 为 "reboot" 则重置内部状态；
 // 否则执行压测任务，将数据写入 Redis，并上报结果给 Master。
 func (a *Agent) executeTask(task *robot_case.AgentTask) {
-	if task.TaskType == "reboot" {
-		a.performReboot(task)
+	if task.TaskType == "control" {
+		a.executeControlTask(task)
 		return
 	}
 	log.Printf("[Agent] Executing task: key=%s report=%s case=%d name=%s IDs=[%d,%d) QPS=%.1f",
@@ -263,6 +263,37 @@ func (a *Agent) executeTask(task *robot_case.AgentTask) {
 		Error:    errMsg,
 	}); err != nil {
 		log.Printf("[Agent] post result error: %v", err)
+	}
+}
+
+// executeControlTask 执行控制指令任务，通过注册的 ControlFunc 处理。
+// 控制指令不涉及 User 上下文，不需要 Tracer/Pressure/QPS 等。
+func (a *Agent) executeControlTask(task *robot_case.AgentTask) {
+	cp := task.ControlParams
+	log.Printf("[Agent] Executing control @%s: key=%s args=%v", cp.Name, task.TaskKey, cp.Args)
+
+	// 特殊处理：reboot 控制指令需要 Agent 级别操作（进程重启），不能走通用 ControlFunc
+	if cp.Name == "reboot" {
+		a.performReboot(task)
+		return
+	}
+
+	ctx := context.Background()
+	errMsg := ""
+	if err := robot_case.RunControlInner(ctx, cp); err != nil {
+		errMsg = err.Error()
+		log.Printf("[Agent] Control @%s failed: %v", cp.Name, err)
+	} else {
+		log.Printf("[Agent] Control @%s completed", cp.Name)
+	}
+
+	if task.TaskKey != "" {
+		if err := a.postResult(robot_case.AgentTaskResult{
+			TaskKey: task.TaskKey,
+			Error:   errMsg,
+		}); err != nil {
+			log.Printf("[Agent] post control result error: %v", err)
+		}
 	}
 }
 

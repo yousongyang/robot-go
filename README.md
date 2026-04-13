@@ -14,7 +14,7 @@ robot-go/
 │   ├── config.go       # 全局配置（SocketUrl 等）
 │   └── task_action.go  # 任务执行框架（TaskActionImpl / TaskActionBase / TaskActionManager）
 ├── case/
-│   └── action.go       # 批量用例执行框架（RegisterCase / RunCaseFile）
+│   └── action.go       # 批量用例执行框架（RegisterCase / RunCaseFileStandAlone）
 ├── cmd/
 │   └── user.go         # 用户管理与命令路由（RegisterUserCommand / GetCurrentUser）
 ├── data/

@@ -208,7 +208,8 @@ func (m *Master) handleAgentReboot(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	go func() {
 		defer cancel()
-		if err := m.rebootAgents(ctx, req.TargetGroup, req.AgentIDs); err != nil {
+		rebootCP := robot_case.ControlParams{Name: "reboot", ErrorBreak: false}
+		if err := m.distributeControlInstruction(ctx, "", 0, rebootCP, req.TargetGroup, req.AgentIDs); err != nil {
 			log.Printf("[Master] Reboot agents failed: %v", err)
 		}
 	}()

@@ -1,13 +1,11 @@
 package atsf4g_go_robot_user
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -65,7 +63,7 @@ func startSolo(flagSet *flag.FlagSet) {
 		os.Exit(1)
 	}
 
-	lines, err := parseSoloCaseContent(string(content))
+	lines, err := robot_case.ParseCaseFileContent(string(content), robot_case.CaseFileModeDistributed)
 	if err != nil {
 		fmt.Printf("Parse case file error: %v\n", err)
 		os.Exit(1)
@@ -103,8 +101,29 @@ func startSolo(flagSet *flag.FlagSet) {
 
 	errorBreak := false
 	for round := 0; round < repeatedTime; round++ {
-		for i, params := range lines {
+		for i, line := range lines {
 			caseIndex := round*len(lines) + i
+
+			// 控制指令：Solo 模式直接本地执行（等同于 Agent 执行）
+			if line.IsControl {
+				cp := line.Control
+				cp.CaseIndex = caseIndex
+				log.Printf("[Solo] Round %d/%d Control[%d] @%s args=%v",
+					round+1, repeatedTime, caseIndex, cp.Name, cp.Args)
+				if err := robot_case.RunControlInner(context.Background(), cp); err != nil {
+					log.Printf("[Solo] Control[%d] @%s failed: %v", caseIndex, cp.Name, err)
+					if cp.ErrorBreak {
+						log.Printf("[Solo] ErrorBreak=true, stopping")
+						errorBreak = true
+						break
+					}
+				} else {
+					log.Printf("[Solo] Control[%d] @%s completed", caseIndex, cp.Name)
+				}
+				continue
+			}
+
+			params := line.Stress
 			params.CaseIndex = caseIndex
 
 			log.Printf("[Solo] Round %d/%d Case[%d] %s IDs=[%d,%d) QPS=%.1f RunTime=%d",
@@ -254,37 +273,4 @@ func startSolo(flagSet *flag.FlagSet) {
 
 	// 登出所有用户
 	user_data.LogoutAllUsers()
-}
-
-// parseSoloCaseContent 解析 case 文件内容为参数列表
-func parseSoloCaseContent(content string) ([]robot_case.Params, error) {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	var lines []robot_case.Params
-
-	for scanner.Scan() {
-		raw := scanner.Text()
-		if idx := strings.Index(raw, "#"); idx >= 0 {
-			raw = raw[:idx]
-		}
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-
-		args := strings.Fields(line)
-		if strings.ToLower(args[len(args)-1]) == "&" {
-			args = args[:len(args)-1]
-		}
-		if len(args) == 0 {
-			continue
-		}
-
-		params, err := robot_case.ParseStressLine(args)
-		if err != nil {
-			return nil, err
-		}
-		params.CaseIndex = len(lines)
-		lines = append(lines, params)
-	}
-	return lines, nil
 }
