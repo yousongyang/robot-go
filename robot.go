@@ -21,6 +21,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// stringSliceFlag 支持多次指定的 flag（如 --set KEY=VAL --set FOO=BAR）
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+func (s *stringSliceFlag) Set(val string) error {
+	*s = append(*s, val)
+	return nil
+}
+
 func NewRobotFlagSet() *flag.FlagSet {
 	flagSet := flag.NewFlagSet(
 		fmt.Sprintf("%s [options...]", filepath.Base(os.Args[0])), flag.ContinueOnError)
@@ -30,6 +39,7 @@ func NewRobotFlagSet() *flag.FlagSet {
 	flagSet.String("config", "", "yaml config file path")
 	flagSet.String("case_file", "", "case file path")
 	flagSet.Int("case_file_repeated", 1, "case file repeated time")
+	flagSet.Var(&stringSliceFlag{}, "set", "set variable for case file: --set KEY=VALUE (repeatable)")
 
 	// 链接层配置
 	flagSet.String("url", "ws://localhost:7001/ws/v1", "server url")
@@ -95,8 +105,29 @@ func LoadFlagSetFromYAML(flagSet *flag.FlagSet, yamlPath string, args []string) 
 		}
 
 		for key, value := range config {
+			if key == "set" {
+				// 特殊处理：set 支持 map/list/string 三种 YAML 写法
+				continue
+			}
 			if flagSet.Lookup(key) != nil {
 				flagSet.Set(key, fmt.Sprintf("%v", value))
+			}
+		}
+		// 处理 set 变量：支持 map、list、string 三种写法
+		if rawSet, ok := config["set"]; ok && flagSet.Lookup("set") != nil {
+			switch v := rawSet.(type) {
+			case map[string]interface{}:
+				for k, val := range v {
+					flagSet.Set("set", fmt.Sprintf("%s=%v", k, val))
+				}
+			case []interface{}:
+				for _, item := range v {
+					flagSet.Set("set", fmt.Sprintf("%v", item))
+				}
+			case string:
+				if v != "" {
+					flagSet.Set("set", v)
+				}
 			}
 		}
 	}
@@ -159,7 +190,7 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 			}
 			repeatedTime = int32(temp)
 		}
-		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime)
+		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime, GetSetVars(flagSet))
 		if err != nil {
 			fmt.Println("Run case file error:", err)
 			log.CloseAllLogWriters()
@@ -181,6 +212,18 @@ func getFlagString(fs *flag.FlagSet, name string) string {
 		return ""
 	}
 	return f.Value.String()
+}
+
+// GetSetVars 从已解析的 FlagSet 中提取 --set KEY=VALUE 变量并返回 map。
+func GetSetVars(fs *flag.FlagSet) map[string]string {
+	f := fs.Lookup("set")
+	if f == nil {
+		return nil
+	}
+	if sv, ok := f.Value.(*stringSliceFlag); ok {
+		return robot_case.ParseSetFlags([]string(*sv))
+	}
+	return nil
 }
 
 // startAgent 以 Agent 模式启动

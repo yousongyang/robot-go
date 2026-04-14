@@ -20,7 +20,7 @@ import (
 // distributeAndWait 解析 case 文件、按行分发给 Agent 并等待全部完成。
 // targetGroup 为空时分发给所有在线 Agent；distributeMode 为 "copy" 或 "balance"。
 // rebootBefore=true 时将在分发正式任务前先向所有目标 Agent 发送 @reboot 控制指令。
-func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string, rebootBefore bool) error {
+func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileContent string, repeatedTime int, targetGroup string, targetAgents []string, distributeMode string, rebootBefore bool, vars map[string]string) error {
 	// 先 Reboot 目标 Agent（如果需要）——通过控制指令框架执行
 	if rebootBefore {
 		log.Printf("[Master] Rebooting agents before task %s", reportID)
@@ -31,7 +31,7 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 	}
 
 	// 解析 case 文件（统一解析控制指令 + 压测行）
-	lines, err := robot_case.ParseCaseFileContent(caseFileContent)
+	lines, err := robot_case.ParseCaseFileContent(robot_case.SubstituteVariables(caseFileContent, vars))
 	if err != nil {
 		return err
 	}
@@ -41,22 +41,25 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 
 	// waitBackground 等待所有后台任务完成，返回第一个错误
 	type bgResult struct {
-		err       error
-		caseIndex int
-		name      string
+		err        error
+		errorBreak bool
+		caseName   string
+		caseIndex  int
 	}
 	var bgTasks []chan bgResult
 
 	waitBackground := func() error {
-		var firstErr error
 		for _, ch := range bgTasks {
 			res := <-ch
-			if res.err != nil && firstErr == nil {
-				firstErr = res.err
+			if res.err != nil {
+				log.Printf("[Master] task error at Control[%d][%s]: %v", res.caseIndex, res.caseName, res.err)
+				if res.errorBreak {
+					return fmt.Errorf("task error at Control[%d][%s]: %v", res.caseIndex, res.caseName, res.err)
+				}
 			}
 		}
 		bgTasks = bgTasks[:0]
-		return firstErr
+		return nil
 	}
 
 	for round := 0; round < repeatedTime; round++ {
@@ -84,11 +87,11 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 					} else {
 						log.Printf("[Master] Control[%d] @%s round=%d completed", idx, cp.Name, round)
 					}
-					ch <- bgResult{err: err, caseIndex: idx, name: "@" + cp.Name}
+					ch <- bgResult{err: err, caseIndex: idx, caseName: "@" + cp.Name, errorBreak: line.Control.ErrorBreak}
 				}(cp, caseIndex)
 				if !line.BackgroundRunning {
 					if bgErr := waitBackground(); bgErr != nil {
-						log.Printf("[Master] Background task error at Control[%d]: %v", caseIndex, bgErr)
+						return bgErr
 					}
 				}
 			} else {
@@ -104,11 +107,11 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 					} else {
 						log.Printf("[Master] Case[%d] %s round=%d completed", idx, params.CaseName, round)
 					}
-					ch <- bgResult{err: err, caseIndex: idx, name: params.CaseName}
+					ch <- bgResult{err: err, caseIndex: idx, caseName: params.CaseName, errorBreak: params.ErrorBreak}
 				}(params, caseIndex)
 				if !line.BackgroundRunning {
 					if bgErr := waitBackground(); bgErr != nil {
-						log.Printf("[Master] Background task error at Case[%d]: %v", caseIndex, bgErr)
+						return bgErr
 					}
 				}
 			}
@@ -116,7 +119,7 @@ func (m *Master) distributeAndWait(ctx context.Context, reportID, caseFileConten
 
 		// 每轮结束时等待剩余后台任务
 		if bgErr := waitBackground(); bgErr != nil {
-			log.Printf("[Master] Background tasks in round %d completed with errors: %v", round, bgErr)
+			return bgErr
 		}
 	}
 	return nil

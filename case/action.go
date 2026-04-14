@@ -24,27 +24,44 @@ type TaskActionCase struct {
 
 func (t *TaskActionCase) HookRun() error {
 	if !lu.IsNil(t.UserHolder.User) {
-		t.UserHolder.User.TakeActionGuard()
-		defer t.UserHolder.User.ReleaseActionGuard()
+		t.UserHolder.User.TakeActionGuard(t)
 	}
 	err := t.Fn(t, t.UserHolder, t.Args)
 	if t.TracerEntry != nil {
 		t.TracerEntry.EndWithError(err)
 		t.TracerEntry = nil
 	}
+	if !lu.IsNil(t.UserHolder.User) {
+		t.UserHolder.User.ReleaseActionGuard(t)
+	}
 	return err
 }
 
-func (t *TaskActionCase) BeforeYield() {
+func (t *TaskActionCase) TakeActionGuardOnRunning() {
 	if !lu.IsNil(t.UserHolder.User) {
-		t.UserHolder.User.ReleaseActionGuard()
+		t.UserHolder.User.TakeActionGuard(t)
 	}
 }
 
-func (t *TaskActionCase) AfterYield() {
+func (t *TaskActionCase) IsTakenActionGuard() bool {
 	if !lu.IsNil(t.UserHolder.User) {
-		t.UserHolder.User.TakeActionGuard()
+		return t.UserHolder.User.IsTakenActionGuard(t)
 	}
+	return true
+}
+
+func (t *TaskActionCase) BeforeYield() error {
+	if !lu.IsNil(t.UserHolder.User) {
+		return t.UserHolder.User.ReleaseActionGuard(t)
+	}
+	return nil
+}
+
+func (t *TaskActionCase) AfterYield() error {
+	if !lu.IsNil(t.UserHolder.User) {
+		return t.UserHolder.User.TakeActionGuard(t)
+	}
+	return nil
 }
 
 func (t *TaskActionCase) Log(format string, a ...any) {

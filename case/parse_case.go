@@ -3,9 +3,39 @@ package atsf4g_go_robot_case
 import (
 	"bufio"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// varPattern 匹配 ${VAR_NAME} 形式的变量引用
+var varPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// SubstituteVariables 将 content 中的 ${VAR} 替换为 vars 中对应的值。
+// 未定义的变量保持原样不替换。
+func SubstituteVariables(content string, vars map[string]string) string {
+	if len(vars) == 0 {
+		return content
+	}
+	return varPattern.ReplaceAllStringFunc(content, func(match string) string {
+		name := match[2 : len(match)-1] // 去掉 ${ 和 }
+		if val, ok := vars[name]; ok {
+			return val
+		}
+		return match
+	})
+}
+
+// ParseSetFlags 将 ["KEY=VALUE", ...] 格式的字符串切片解析为 map。
+func ParseSetFlags(sets []string) map[string]string {
+	vars := make(map[string]string, len(sets))
+	for _, s := range sets {
+		if idx := strings.IndexByte(s, '='); idx > 0 {
+			vars[s[:idx]] = s[idx+1:]
+		}
+	}
+	return vars
+}
 
 // ParseLine 解析一行参数
 // 格式: CaseName ErrorBreak IDPrefix IDStart IDEnd TargetQPS UserBatchCount RunTime [args...]

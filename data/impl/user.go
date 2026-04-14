@@ -41,9 +41,11 @@ type User struct {
 
 	onClosed                []func(user user_data.User)
 	taskManager             *base.TaskActionManager
-	taskActionGuard         sync.Mutex
 	logHandler              func(format string, a ...any)
 	receiveHandlerCloseChan chan struct{}
+
+	taskActionGuard   sync.Mutex
+	takeActionGuardId atomic.Uint64
 
 	messageHandler map[string]func(*user_data.TaskActionUser, proto.Message, int32) error
 
@@ -144,12 +146,28 @@ func (user *User) Login() {
 	user_data.OnUserLogin()
 }
 
-func (u *User) TakeActionGuard() {
-	u.taskActionGuard.Lock()
+func (u *User) IsTakenActionGuard(task base.TaskActionImpl) bool {
+	return u.takeActionGuardId.Load() == task.GetTaskId()
 }
 
-func (u *User) ReleaseActionGuard() {
+func (u *User) TakeActionGuard(task base.TaskActionImpl) error {
+	taskId := task.GetTaskId()
+	if u.takeActionGuardId.Load() == taskId {
+		// 已经加锁
+		return fmt.Errorf("already taken action guard")
+	}
+	u.taskActionGuard.Lock()
+	u.takeActionGuardId.Store(taskId)
+	return nil
+}
+
+func (u *User) ReleaseActionGuard(task base.TaskActionImpl) error {
+	taskId := task.GetTaskId()
+	if !u.takeActionGuardId.CompareAndSwap(taskId, 0) {
+		return fmt.Errorf("action guard not taken by this task")
+	}
 	u.taskActionGuard.Unlock()
+	return nil
 }
 
 func (user *User) AllocSequence() uint64 {
@@ -300,10 +318,13 @@ func (user *User) ReceiveHandler(unpack user_data.UserReceiveUnpackFunc, createM
 	}
 }
 
-func (user *User) AwaitReceiveHandlerClose() {
-	user.ReleaseActionGuard()
+func (user *User) AwaitReceiveHandlerClose(task base.TaskActionImpl) error {
+	err := user.ReleaseActionGuard(task)
+	if err != nil {
+		return err
+	}
 	<-user.receiveHandlerCloseChan
-	user.TakeActionGuard()
+	return user.TakeActionGuard(task)
 }
 
 func (user *User) InitHeartbeatFunc(f func(user_data.User) error) {

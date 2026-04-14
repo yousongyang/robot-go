@@ -14,14 +14,15 @@ type TaskActionImpl interface {
 	AwaitTask(TaskActionImpl) error
 	InitOnFinish(func(TaskActionImpl, error))
 	GetTaskId() uint64
-	BeforeYield()
-	AfterYield()
+	BeforeYield() error
+	AfterYield() error
 	Finish(error)
 	InitTaskId(uint64)
 	GetTimeoutDuration() time.Duration
 	InitTimeoutTimer(*time.Timer)
 	TimeoutKill()
 	Kill()
+	IsTakenActionGuard() bool
 
 	Yield() *TaskActionResumeData
 	Resume(*TaskActionAwaitData, *TaskActionResumeData)
@@ -120,10 +121,25 @@ func (t *TaskActionBase) Yield() *TaskActionResumeData {
 			Err: fmt.Errorf("task action not set await data"),
 		}
 	}
-	t.Impl.BeforeYield()
+	if !t.Impl.IsTakenActionGuard() {
+		return &TaskActionResumeData{
+			Err: fmt.Errorf("task action guard not taken"),
+		}
+	}
+	err := t.Impl.BeforeYield()
+	if err != nil {
+		return &TaskActionResumeData{
+			Err: err,
+		}
+	}
 	ret := <-t.AwaitChannel
 	t.AwaitData = TaskActionAwaitData{}
-	t.Impl.AfterYield()
+	err = t.Impl.AfterYield()
+	if err != nil {
+		return &TaskActionResumeData{
+			Err: err,
+		}
+	}
 	return ret
 }
 
@@ -227,12 +243,18 @@ func (t *TaskActionBase) AwaitTask(other TaskActionImpl) error {
 	return resumeData.Err
 }
 
-func (t *TaskActionBase) BeforeYield() {
+func (t *TaskActionBase) BeforeYield() error {
 	// do nothing
+	return nil
 }
 
-func (t *TaskActionBase) AfterYield() {
+func (t *TaskActionBase) AfterYield() error {
 	// do nothing
+	return nil
+}
+
+func (t *TaskActionBase) IsTakenActionGuard() bool {
+	return false
 }
 
 func (t *TaskActionBase) InitTaskId(id uint64) {

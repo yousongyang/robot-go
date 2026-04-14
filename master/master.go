@@ -219,13 +219,14 @@ func (m *Master) handleAgentReboot(w http.ResponseWriter, r *http.Request) {
 
 func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CaseFileContent string   `json:"case_file_content"`
-		RepeatedTime    int      `json:"repeated_time"`
-		ReportID        string   `json:"report_id"`
-		TargetGroup     string   `json:"target_group"`      // 目标组（空 = 全部），组模式
-		TargetAgents    []string `json:"target_agents"`     // 指定 Agent ID 列表，Agent 模式（优先级高于 TargetGroup）
-		DistributeMode  string   `json:"distribute_mode"`   // "balance"（默认） 或 "copy"
-		RebootBefore    bool     `json:"reboot_before_run"` // 执行前先 Reboot 所有目标 Agent
+		CaseFileContent string            `json:"case_file_content"`
+		RepeatedTime    int               `json:"repeated_time"`
+		ReportID        string            `json:"report_id"`
+		TargetGroup     string            `json:"target_group"`      // 目标组（空 = 全部），组模式
+		TargetAgents    []string          `json:"target_agents"`     // 指定 Agent ID 列表，Agent 模式（优先级高于 TargetGroup）
+		DistributeMode  string            `json:"distribute_mode"`   // "balance"（默认） 或 "copy"
+		RebootBefore    bool              `json:"reboot_before_run"` // 执行前先 Reboot 所有目标 Agent
+		Variables       map[string]string `json:"variables"`         // ${VAR} 变量替换
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
@@ -300,6 +301,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 		"target_group":      req.TargetGroup,
 		"target_agents":     req.TargetAgents,
 		"distribute_mode":   req.DistributeMode,
+		"variables":         req.Variables,
 		"submitted_at":      time.Now().Format(time.RFC3339),
 	}
 	if data, err := json.Marshal(historyEntry); err == nil {
@@ -334,7 +336,7 @@ func (m *Master) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 			delete(m.taskCancels, req.ReportID)
 			m.mu.Unlock()
 		}()
-		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.TargetAgents, req.DistributeMode, req.RebootBefore); err != nil {
+		if err := m.distributeAndWait(ctx, req.ReportID, req.CaseFileContent, req.RepeatedTime, req.TargetGroup, req.TargetAgents, req.DistributeMode, req.RebootBefore, req.Variables); err != nil {
 			log.Printf("[Master] Task %s failed: %v", req.ReportID, err)
 			m.mu.Lock()
 			st.Status = "error"

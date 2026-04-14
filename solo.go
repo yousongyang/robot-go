@@ -63,7 +63,7 @@ func startSolo(flagSet *flag.FlagSet) {
 		os.Exit(1)
 	}
 
-	lines, err := robot_case.ParseCaseFileContent(string(content))
+	lines, err := robot_case.ParseCaseFileContent(robot_case.SubstituteVariables(string(content), GetSetVars(flagSet)))
 	if err != nil {
 		fmt.Printf("Parse case file error: %v\n", err)
 		os.Exit(1)
@@ -100,27 +100,31 @@ func startSolo(flagSet *flag.FlagSet) {
 	})
 
 	type bgResult struct {
-		errMsg    string
-		caseName  string
-		caseIndex int
+		err        error
+		errorBreak bool
+		caseName   string
+		caseIndex  int
 	}
 	var bgTasks []chan bgResult
 
-	waitBackground := func() bool {
+	waitRunningTask := func() error {
 		for _, ch := range bgTasks {
 			res := <-ch
-			if res.errMsg != "" {
-				log.Printf("[Solo] Background Case[%d] %s completed with error: %s", res.caseIndex, res.caseName, res.errMsg)
+			if res.err != nil {
+				log.Printf("[Solo] Case[%d] %s completed with error: %v", res.caseIndex, res.caseName, res.err)
+				if res.errorBreak {
+					return fmt.Errorf("case[%d] %s: %w", res.caseIndex, res.caseName, res.err)
+				}
 			} else {
-				log.Printf("[Solo] Background Case[%d] %s completed", res.caseIndex, res.caseName)
+				log.Printf("[Solo] Case[%d] %s completed", res.caseIndex, res.caseName)
 			}
 		}
 		bgTasks = bgTasks[:0]
-		return false
+		return nil
 	}
 
 	// runSoloCase 封装单个 case 的完整执行流程（tracer、pressure、flush、RunCaseInner）
-	runSoloCase := func(caseIndex int, params robot_case.Params) string {
+	runSoloCase := func(caseIndex int, params robot_case.Params) error {
 		log.Printf("[Solo] Case[%d] %s IDs=[%d,%d) QPS=%.1f RunTime=%d",
 			caseIndex, params.CaseName,
 			params.OpenIDStart, params.OpenIDEnd, params.TargetQPS, params.RunTime)
@@ -205,7 +209,7 @@ func startSolo(flagSet *flag.FlagSet) {
 		}()
 
 		ctx := context.Background()
-		errMsg := robot_case.RunCaseInner(ctx, params, tracer, pressure, false, false)
+		errMsg := robot_case.RunCaseInner(ctx, params, tracer, pressure, false, true)
 
 		// 停止定时刷新
 		close(flushStopCh)
@@ -216,12 +220,18 @@ func startSolo(flagSet *flag.FlagSet) {
 
 		// 最终刷新（捕获剩余未被 ticker 捞到的数据）
 		flushOnce()
-		return errMsg
+		if errMsg != "" {
+			return fmt.Errorf("case %s error: %s", caseName, errMsg)
+		}
+		return nil
 	}
 
 	errorBreak := false
 	for round := 0; round < repeatedTime; round++ {
 		for i, line := range lines {
+			if errorBreak {
+				break
+			}
 			caseIndex := round*len(lines) + i
 
 			// 控制指令：Solo 模式直接本地执行（等同于 Agent 执行）
@@ -234,14 +244,11 @@ func startSolo(flagSet *flag.FlagSet) {
 				go func(cp robot_case.ControlParams, idx int) {
 					log.Printf("[Solo] Round %d/%d Control[%d] @%s args=%v",
 						round+1, repeatedTime, idx, cp.Name, cp.Args)
-					errMsg := ""
-					if err := robot_case.RunControlInner(context.Background(), cp); err != nil {
-						errMsg = err.Error()
-					}
-					ch <- bgResult{errMsg: errMsg, caseName: "@" + cp.Name, caseIndex: idx}
+					err := robot_case.RunControlInner(context.Background(), cp)
+					ch <- bgResult{err: err, caseName: "@" + cp.Name, caseIndex: idx, errorBreak: line.Control.ErrorBreak}
 				}(cp, caseIndex)
 				if !line.BackgroundRunning {
-					waitBackground()
+					errorBreak = waitRunningTask() != nil
 				}
 				continue
 			}
@@ -256,17 +263,18 @@ func startSolo(flagSet *flag.FlagSet) {
 				log.Printf("[Solo] Round %d/%d Case[%d] %s IDs=[%d,%d) QPS=%.1f RunTime=%d",
 					round+1, repeatedTime, idx, params.CaseName,
 					params.OpenIDStart, params.OpenIDEnd, params.TargetQPS, params.RunTime)
-				errMsg := runSoloCase(idx, params)
-				ch <- bgResult{errMsg: errMsg, caseName: params.CaseName, caseIndex: idx}
+				err := runSoloCase(idx, params)
+				ch <- bgResult{err: err, caseName: params.CaseName, caseIndex: idx, errorBreak: params.ErrorBreak}
 			}(params, caseIndex)
 			if !line.BackgroundRunning {
-				waitBackground()
+				errorBreak = waitRunningTask() != nil
 			}
 		}
-
+		if errorBreak {
+			break
+		}
 		// 每轮结束时等待剩余后台任务
-		waitBackground()
-
+		errorBreak = waitRunningTask() != nil
 		if errorBreak {
 			break
 		}

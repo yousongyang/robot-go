@@ -32,13 +32,17 @@ type User interface {
 	ReceiveHandler(unpack UserReceiveUnpackFunc, createMsg UserReceiveCreateMessageFunc)
 	SendReq(action base.TaskActionImpl, csMsg proto.Message, csHead proto.Message,
 		csBody proto.Message, rpcName string, sequence uint64, needRsp bool) (int32, proto.Message, error)
-	TakeActionGuard()
-	ReleaseActionGuard()
+
+	TakeActionGuard(task base.TaskActionImpl) error
+	ReleaseActionGuard(task base.TaskActionImpl) error
+	IsTakenActionGuard(task base.TaskActionImpl) bool
+
+	AwaitReceiveHandlerClose(task base.TaskActionImpl) error
+
 	RunTask(timeout time.Duration, f func(*TaskActionUser) error, name string) *TaskActionUser
 	RunTaskDefaultTimeout(f func(*TaskActionUser) error, name string) *TaskActionUser
 	AddOnClosedHandler(f func(User))
 	Log(format string, a ...any)
-	AwaitReceiveHandlerClose()
 	InitHeartbeatFunc(func(User) error)
 
 	GetLogined() bool

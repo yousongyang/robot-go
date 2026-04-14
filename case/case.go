@@ -22,6 +22,10 @@ import (
 )
 
 var (
+	ProgressBarRunning atomic.Int32
+	StopedCh           chan struct{}
+	StopCh             chan struct{}
+
 	ProgressBarTotalCount   atomic.Int64
 	ProgressBarCurrentCount atomic.Int64
 
@@ -42,7 +46,7 @@ func CmdRunCaseFile(task base.TaskActionImpl, cmd []string) string {
 		return err.Error()
 	}
 
-	if runErr := RunCaseFileStandAlone(cmd[0], int32(repeatedTime)); runErr != nil {
+	if runErr := RunCaseFileStandAlone(cmd[0], int32(repeatedTime), nil); runErr != nil {
 		return runErr.Error()
 	}
 	return ""
@@ -64,12 +68,6 @@ func RefreshProgressBar() {
 	}
 }
 
-func ClearProgressBar() {
-	ProgressBarTotalCount.Store(0)
-	ProgressBarCurrentCount.Store(0)
-	FailedCount.Store(0)
-}
-
 func InitProgressBar(totalCount int64) {
 	ProgressBarTotalCount.Add(totalCount)
 }
@@ -78,44 +76,58 @@ func AddProgressBarCount() {
 	ProgressBarCurrentCount.Add(1)
 }
 
+func ShowProgressBar() {
+	if ProgressBarRunning.Add(1) == 1 {
+		StopedCh = make(chan struct{}, 1)
+		StopCh = make(chan struct{}, 1)
+		go func() {
+			RefreshProgressBar()
+			for {
+				select {
+				case <-time.After(time.Second):
+					RefreshProgressBar()
+				case <-StopCh:
+					RefreshProgressBar()
+
+					ProgressBarTotalCount.Store(0)
+					ProgressBarCurrentCount.Store(0)
+					FailedCount.Store(0)
+
+					StopedCh <- struct{}{}
+					return
+				}
+			}
+		}()
+	}
+}
+
+func CloseProgressBar() {
+	if ProgressBarRunning.Add(-1) == 0 {
+		close(StopCh)
+		<-StopedCh
+	}
+}
+
 func runCaseWait(pendingCase []chan string) error {
 	if len(pendingCase) == 0 {
 		return nil
 	}
-	stopCh := make(chan struct{})
-	stopedCh := make(chan struct{}, 1)
-	go func() {
-		RefreshProgressBar()
-		for {
-			select {
-			case <-time.After(time.Second):
-				RefreshProgressBar()
-			case <-stopCh:
-				RefreshProgressBar()
-				ClearProgressBar()
-				stopedCh <- struct{}{}
-				return
-			}
-		}
-	}()
 	for _, ch := range pendingCase {
 		result := <-ch
 		if result != "" {
 			return fmt.Errorf("Run Case Failed: %s", result)
 		}
 	}
-	close(stopCh)
-	<-stopedCh
 	return nil
 }
 
-func RunCaseFileStandAlone(caseFile string, repeatedTime int32) error {
+func RunCaseFileStandAlone(caseFile string, repeatedTime int32, vars map[string]string) error {
 	content, err := os.ReadFile(caseFile)
 	if err != nil {
 		return err
 	}
 
-	lines, err := ParseCaseFileContent(string(content))
+	lines, err := ParseCaseFileContent(SubstituteVariables(string(content), vars))
 	if err != nil {
 		return err
 	}
@@ -210,6 +222,8 @@ func RunCaseInner(
 
 	if progressBar {
 		InitProgressBar(totalCount)
+		ShowProgressBar()
+		defer CloseProgressBar()
 	}
 
 	var logHandler func(openId string, format string, a ...any) = nil
@@ -231,6 +245,7 @@ func RunCaseInner(
 
 	var failedCount atomic.Int64
 	var errorBreakTriggered atomic.Bool
+	var caseError error
 
 	// Worker 数量：GOMAXPROCS/2
 	workers := runtime.GOMAXPROCS(0) / 2
@@ -326,6 +341,7 @@ func RunCaseInner(
 					task.Log("Case[%s] Failed: %v", caseName, err)
 					if params.ErrorBreak {
 						errorBreakTriggered.Store(true)
+						caseError = err
 					}
 				}
 				if adaptiveMode {
@@ -405,7 +421,7 @@ func RunCaseInner(
 	}
 
 	if failedCount.Load() != 0 {
-		return fmt.Sprintf("Case[%s:%d] Complete With %d Failed, Total Time: %s", caseName, params.CaseIndex, failedCount.Load(), useTime)
+		return fmt.Sprintf("Case[%s:%d] Complete With %d Failed, Total Time: %s, Error: %v", caseName, params.CaseIndex, failedCount.Load(), useTime, caseError)
 	}
 	utils.StdoutLog(fmt.Sprintf("Case[%s:%d] All Success, Total Time: %s", caseName, params.CaseIndex, useTime))
 	return ""

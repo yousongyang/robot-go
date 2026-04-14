@@ -288,6 +288,16 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
         <div class="form-hint">Balance: agents share load. Copy: every agent runs the full case independently.</div>
       </div>
     </div>
+    <div class="form-group">
+      <label>Variables <span style="font-size:11px;color:var(--accent)">(${NAME} in case file will be replaced)</span></label>
+      <div id="varsContainer">
+        <div class="var-row" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <input type="text" class="var-name" placeholder="Variable Name" style="width:180px">
+          <input type="text" class="var-value" placeholder="Value" style="flex:1">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="addVarRow()" style="min-width:32px;padding:4px 8px">+</button>
+        </div>
+      </div>
+    </div>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-primary" id="btnSubmit" onclick="submitTask()">&#x25B6; Submit Task</button>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer">
@@ -715,6 +725,58 @@ document.addEventListener('click', e => {
   }
 });
 
+// ---------- Variables ----------
+function addVarRow() {
+  const container = document.getElementById('varsContainer');
+  const row = document.createElement('div');
+  row.className = 'var-row';
+  row.style = 'display:flex;gap:8px;align-items:center;margin-bottom:6px';
+  row.innerHTML = '<input type="text" class="var-name" placeholder="Variable Name" style="width:180px">' +
+    '<input type="text" class="var-value" placeholder="Value" style="flex:1">' +
+    '<button type="button" class="btn btn-sm btn-danger" onclick="removeVarRow(this)" style="min-width:32px;padding:4px 8px">&minus;</button>';
+  container.appendChild(row);
+}
+
+function removeVarRow(btn) {
+  btn.closest('.var-row').remove();
+}
+
+function getVarsFromUI() {
+  const vars = {};
+  document.querySelectorAll('#varsContainer .var-row').forEach(row => {
+    const name = row.querySelector('.var-name').value.trim();
+    const val = row.querySelector('.var-value').value;
+    if (name) vars[name] = val;
+  });
+  return Object.keys(vars).length > 0 ? vars : null;
+}
+
+function setVarsInUI(vars) {
+  const container = document.getElementById('varsContainer');
+  // 清空现有行
+  container.innerHTML = '';
+  const entries = vars ? Object.entries(vars) : [];
+  if (entries.length === 0) {
+    // 至少保留一行空行
+    container.innerHTML = '<div class="var-row" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">' +
+      '<input type="text" class="var-name" placeholder="Variable Name" style="width:180px">' +
+      '<input type="text" class="var-value" placeholder="Value" style="flex:1">' +
+      '<button type="button" class="btn btn-sm btn-secondary" onclick="addVarRow()" style="min-width:32px;padding:4px 8px">+</button></div>';
+    return;
+  }
+  entries.forEach((kv, i) => {
+    const row = document.createElement('div');
+    row.className = 'var-row';
+    row.style = 'display:flex;gap:8px;align-items:center;margin-bottom:6px';
+    const btnHtml = i === 0
+      ? '<button type="button" class="btn btn-sm btn-secondary" onclick="addVarRow()" style="min-width:32px;padding:4px 8px">+</button>'
+      : '<button type="button" class="btn btn-sm btn-danger" onclick="removeVarRow(this)" style="min-width:32px;padding:4px 8px">&minus;</button>';
+    row.innerHTML = '<input type="text" class="var-name" placeholder="Variable Name" style="width:180px" value="' + escapeHtml(kv[0]) + '">' +
+      '<input type="text" class="var-value" placeholder="Value" style="flex:1" value="' + escapeHtml(kv[1]) + '">' + btnHtml;
+    container.appendChild(row);
+  });
+}
+
 // ---------- Submit Task ----------
 async function submitTask() {
   const content = document.getElementById('taskContent').value.trim();
@@ -728,6 +790,8 @@ async function submitTask() {
   try {
     const body = { case_file_content: content, repeated_time: repeated, distribute_mode: distributeMode };
     if (reportId) body.report_id = reportId;
+    const vars = getVarsFromUI();
+    if (vars) body.variables = vars;
     body.reboot_before_run = document.getElementById('taskRebootBefore').checked;
     if (targetMode === 'agent') {
       if (selectedAgents.length > 0) body.target_agents = selectedAgents.slice();
@@ -839,6 +903,8 @@ function redoHistory(jsonStr) {
   document.getElementById('taskReportId').value = '';
   document.getElementById('taskRepeated').value = h.repeated_time || 1;
   document.getElementById('taskDistributeMode').value = h.distribute_mode || 'balance';
+  // 还原变量
+  setVarsInUI(h.variables || null);
   // 还原 target 选择
   if (h.target_agents && h.target_agents.length > 0) {
     setTargetMode('agent');
