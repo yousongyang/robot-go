@@ -324,6 +324,23 @@ func RunCaseInner(
 
 			var runTaskCount int64
 
+			taskActionPool := sync.Pool{
+				New: func() any {
+					task := &TaskActionCase{
+						TaskActionBase: *base.NewTaskActionBase(caseAction.timeout, "Case Runner Worker"),
+						Fn:             caseAction.fun,
+						logHandler:     logHandler,
+						Args:           params.ExtraArgs,
+						NeedLog:        enableLog,
+					}
+					if len(params.ExtraArgs) > 0 {
+						task.Args = params.ExtraArgs
+					}
+					task.TaskActionBase.Impl = task
+					return task
+				},
+			}
+
 			onFinishFunc := func(task base.TaskActionImpl, err error) {
 				caseData := userCaseDatas[task.(*TaskActionCase).UserHolder.PrivateData.(*userPrivateData).index]
 				// 先增加已完成的任务数，再决定是否继续分配任务，避免竞争
@@ -350,23 +367,7 @@ func RunCaseInner(
 					pressure.DonePending()
 				}
 				mgr.OnTaskFinish(task.GetTaskId())
-			}
-
-			taskActionPool := sync.Pool{
-				New: func() any {
-					task := &TaskActionCase{
-						TaskActionBase: *base.NewTaskActionBase(caseAction.timeout, "Case Runner Worker"),
-						Fn:             caseAction.fun,
-						logHandler:     logHandler,
-						Args:           params.ExtraArgs,
-						NeedLog:        enableLog,
-					}
-					if len(params.ExtraArgs) > 0 {
-						task.Args = params.ExtraArgs
-					}
-					task.TaskActionBase.Impl = task
-					return task
-				},
+				taskActionPool.Put(task)
 			}
 
 			for {

@@ -195,23 +195,31 @@ func (t *TaskActionBase) Finish(result error) {
 	if result != nil {
 		t.Impl.Log("Finish %s with error: %v", t.Name, result)
 	}
-	t.finishLock.Lock()
-	defer t.finishLock.Unlock()
-	t.finished.Store(true)
-	t.result = result
-	for _, fn := range t.onFinish {
-		fn(t.Impl, t.result)
+	if t.finished.CompareAndSwap(false, true) {
+		t.finishLock.Lock()
+		defer t.finishLock.Unlock()
+
+		t.result = result
+		for _, fn := range t.onFinish {
+			fn(t.Impl, t.result)
+		}
+		t.onFinish = t.onFinish[:0]
 	}
 }
 
 func (t *TaskActionBase) InitOnFinish(fn func(TaskActionImpl, error)) {
+	if t.finished.Load() {
+		fn(t.Impl, t.result)
+		return
+	}
 	t.finishLock.Lock()
 	defer t.finishLock.Unlock()
 	if t.finished.Load() {
 		fn(t.Impl, t.result)
 		return
+	} else {
+		t.onFinish = append(t.onFinish, fn)
 	}
-	t.onFinish = append(t.onFinish, fn)
 }
 
 func (t *TaskActionBase) GetTaskId() uint64 {
