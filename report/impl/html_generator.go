@@ -1135,6 +1135,28 @@ function mask(data){
 // Count non-null non-zero values
 function nnz(d){var c=0;for(var i=0;i<d.length;i++)if(d[i]!==null&&d[i]!==0&&d[i]!==undefined)c++;return c;}
 
+// addGaps 将连续小于阈値（5s）的零值段替换为 null，避免两段数据之间被连线。
+function addGaps(data,timeLabels,gapMs){
+  if(!gapMs)gapMs=5000;
+  var result=data.slice();
+  var i=0;
+  while(i<result.length){
+    if(result[i]===0||result[i]===null){
+      var j=i;
+      while(j<result.length&&(result[j]===0||result[j]===null))j++;
+      // 只处理有效数据内部的底阮段（两侧都有数据）
+      if(i>0&&j<result.length&&timeLabels&&timeLabels.length>j){
+        var t0=parseLabel(timeLabels[i]),t1=parseLabel(timeLabels[j-1]);
+        if(t1-t0+1000>=gapMs){
+          for(var k=i;k<j;k++)result[k]=null;
+        }
+      }
+      i=j;
+    }else{i++;}
+  }
+  return result;
+}
+
 // Check if multi-series data needs log scale
 function needLogAxis(seriesArr){
   var maxAvg=0,minAvg=Infinity,valid=0;
@@ -1307,7 +1329,7 @@ function renderCharts(cd,caseName){
   var qS=[],qData=[];
   fs.forEach(function(s){
     var gi=D.series.findIndex(function(x){return x.name===s.name;});if(gi<0)gi=0;
-    var d=mask(s.qps);
+    var d=addGaps(mask(s.qps),tl);
     qData.push(d);
     qS.push(seriesOpt(s.name,d,C[gi%C.length]));
   });
@@ -1326,7 +1348,7 @@ function renderCharts(cd,caseName){
   var lS=[],lData=[];
   fs.forEach(function(s){
     var gi=D.series.findIndex(function(x){return x.name===s.name;});if(gi<0)gi=0;
-    var d=mask(s.varianceMs);
+    var d=addGaps(mask(s.varianceMs),tl);
     lData.push(d);
     lS.push(seriesOpt(s.name,d,C[gi%C.length],{lineStyle:{width:1.5}}));
   });
@@ -1345,7 +1367,7 @@ function renderCharts(cd,caseName){
   var sfS=[],sfData=[];
   fs.forEach(function(s){
     var gi=D.series.findIndex(function(x){return x.name===s.name;});if(gi<0)gi=0;
-    var ds=mask(s.success),df=mask(s.failed);
+    var ds=addGaps(mask(s.success),tl),df=addGaps(mask(s.failed),tl);
     sfData.push(ds);sfData.push(df);
     sfS.push(seriesOpt(s.name+' \u6210\u529f',ds,C[gi%C.length],{areaStyle:{opacity:.2}}));
     sfS.push(seriesOpt(s.name+' \u5931\u8d25',df,C[(gi+3)%C.length],{lineStyle:{type:'dashed'}}));
