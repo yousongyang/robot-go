@@ -327,7 +327,11 @@ func NewTaskActionManagerWithPool(poolSize int) *TaskActionManager {
 		if task, ok := i.(TaskActionImpl); ok {
 			task.Finish(task.HookRun())
 		}
-	})
+	},
+		ants.WithPanicHandler(func(a any) {
+			panic(a)
+		}),
+	)
 	return ret
 }
 
