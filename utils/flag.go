@@ -2,6 +2,7 @@ package atsf4g_go_robot_util
 
 import (
 	"flag"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,20 @@ func GetFlagString(fs *flag.FlagSet, name string) string {
 		return ""
 	}
 	return f.Value.String()
+}
+
+func GetFlagInt32(fs *flag.FlagSet, name string) int32 {
+	str := GetFlagString(fs, name)
+	if str == "" {
+		return 0
+	}
+	var v int32
+	value, err := strconv.Atoi(str)
+	if err != nil {
+		return 0
+	}
+	v = int32(value)
+	return v
 }
 
 // ParseSetFlags 将 ["KEY=VALUE", ...] 格式的字符串切片解析为 map。

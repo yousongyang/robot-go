@@ -1,4 +1,4 @@
-package atsf4g_go_robot_user
+package solo
 
 import (
 	"context"
@@ -31,12 +31,9 @@ func StartSolo(flagSet *flag.FlagSet) {
 		os.Exit(1)
 	}
 
-	repeatedTime := 1
-	if v := utils.GetFlagString(flagSet, "case_file_repeated"); v != "" {
-		if n, err := fmt.Sscanf(v, "%d", &repeatedTime); err != nil || n != 1 || repeatedTime < 1 {
-			fmt.Println("Invalid case_file_repeated value:", v)
-			os.Exit(1)
-		}
+	repeatedTime := utils.GetFlagInt32(flagSet, "case_file_repeated")
+	if repeatedTime < 1 {
+		repeatedTime = 1
 	}
 
 	redisAddr := utils.GetFlagString(flagSet, "redis-addr")
@@ -238,7 +235,7 @@ func StartSolo(flagSet *flag.FlagSet) {
 	}
 
 	errorBreak := false
-	for round := 0; round < repeatedTime; round++ {
+	for round := 0; round < int(repeatedTime); round++ {
 		for i, line := range lines {
 			if errorBreak {
 				break

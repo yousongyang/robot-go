@@ -21,8 +21,9 @@ import (
 	robot_case "github.com/atframework/robot-go/case"
 	user_data "github.com/atframework/robot-go/data"
 	redis_interface "github.com/atframework/robot-go/redis"
-	"github.com/atframework/robot-go/report"
+	report "github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
+	utils "github.com/atframework/robot-go/utils"
 )
 
 // ErrAgentIDConflict 同一 Agent ID 已被其他在线实例占用。
@@ -84,6 +85,25 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		client:        &http.Client{Timeout: 40 * time.Second},
 		onlineMetrics: om,
 	}, nil
+}
+
+// startAgent 以 Agent 模式启动
+func StartAgent(flagSet *flag.FlagSet, unpack user_data.UserReceiveUnpackFunc, createMsg user_data.UserReceiveCreateMessageFunc) {
+	cfg := AgentConfig{
+		RedisConfig: redis_interface.ParseConfig(flagSet),
+		MasterAddr:  utils.GetFlagString(flagSet, "master-addr"),
+		AgentID:     utils.GetFlagString(flagSet, "agent-id"),
+		GroupID:     utils.GetFlagString(flagSet, "agent-group"),
+	}
+	a, err := NewAgent(cfg)
+	if err != nil {
+		fmt.Println("Agent init error:", err)
+		os.Exit(1)
+	}
+	if err := a.Start(); err != nil {
+		fmt.Println("Agent error:", err)
+		os.Exit(1)
+	}
 }
 
 // Start 注册到 Master，然后进入长轮询循环（阻塞）。

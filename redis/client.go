@@ -16,7 +16,6 @@ type Config struct {
 	Addrs       []string `yaml:"addrs"`        // Redis 地址列表（非集群只取第一个）
 	Password    string   `yaml:"password"`     // 密码
 	ClusterMode bool     `yaml:"cluster_mode"` // 是否集群模式
-	PoolSize    int      `yaml:"pool_size"`    // 连接池大小（0 使用默认值）
 }
 
 // 统一的 Redis 客户端抽象
@@ -62,9 +61,6 @@ func NewClient(cfg Config) (RedisClient, error) {
 			Addrs:    cfg.Addrs,
 			Password: cfg.Password,
 		}
-		if cfg.PoolSize > 0 {
-			opts.PoolSize = cfg.PoolSize
-		}
 		client := redis.NewClusterClient(opts)
 		if err := client.Ping(ctx).Err(); err != nil {
 			client.Close()
@@ -76,9 +72,6 @@ func NewClient(cfg Config) (RedisClient, error) {
 	opts := &redis.Options{
 		Addr:     cfg.Addrs[0],
 		Password: cfg.Password,
-	}
-	if cfg.PoolSize > 0 {
-		opts.PoolSize = cfg.PoolSize
 	}
 	client := redis.NewClient(opts)
 	if err := client.Ping(ctx).Err(); err != nil {

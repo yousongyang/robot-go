@@ -5,20 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
-	log "github.com/atframework/atframe-utils-go/log"
-	agent "github.com/atframework/robot-go/agent"
 	base "github.com/atframework/robot-go/base"
-	robot_case "github.com/atframework/robot-go/case"
 	_ "github.com/atframework/robot-go/cmd"
 	conn "github.com/atframework/robot-go/conn"
 	gatewayconn "github.com/atframework/robot-go/conn/atgateway"
 	user_interface "github.com/atframework/robot-go/data"
 	user_impl "github.com/atframework/robot-go/data/impl"
+	agent "github.com/atframework/robot-go/mode/agent"
+	solo "github.com/atframework/robot-go/mode/solo"
+	standalone "github.com/atframework/robot-go/mode/standalone"
 	redis_interface "github.com/atframework/robot-go/redis"
-	solo "github.com/atframework/robot-go/solo"
 	utils "github.com/atframework/robot-go/utils"
 	"gopkg.in/yaml.v3"
 )
@@ -154,58 +152,15 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 	switch mode {
 	case "agent":
 		fmt.Println("Starting in Agent mode")
-		startAgent(flagSet, unpack, createMsg)
+		agent.StartAgent(flagSet, unpack, createMsg)
 		return
 	case "solo":
 		fmt.Println("Starting in Solo mode (single-node stress test)")
 		solo.StartSolo(flagSet)
 		return
-	}
-
-	// --- Standalone 模式 ---
-	caseFile := flagSet.Lookup("case_file").Value.String()
-	if caseFile != "" {
-		repeatedTimeString := flagSet.Lookup("case_file_repeated").Value.String()
-		var repeatedTime int32 = 1
-		if repeatedTimeString != "" {
-			temp, err := strconv.Atoi(repeatedTimeString)
-			if err != nil {
-				fmt.Println("Invalid case_file_repeated value:", repeatedTimeString)
-				return
-			}
-			repeatedTime = int32(temp)
-		}
-		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime, utils.GetSetVars(flagSet))
-		if err != nil {
-			fmt.Println("Run case file error:", err)
-			log.CloseAllLogWriters()
-			os.Exit(1)
-		}
-	} else {
-		utils.ReadLine()
-	}
-
-	utils.StdoutLog("Closing all pending connections")
-	user_interface.LogoutAllUsers()
-	log.CloseAllLogWriters()
-	utils.StdoutLog("Exiting....")
-}
-
-// startAgent 以 Agent 模式启动
-func startAgent(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFunc, createMsg user_interface.UserReceiveCreateMessageFunc) {
-	cfg := agent.AgentConfig{
-		RedisConfig: redis_interface.ParseConfig(flagSet),
-		MasterAddr:  utils.GetFlagString(flagSet, "master-addr"),
-		AgentID:     utils.GetFlagString(flagSet, "agent-id"),
-		GroupID:     utils.GetFlagString(flagSet, "agent-group"),
-	}
-	a, err := agent.NewAgent(cfg)
-	if err != nil {
-		fmt.Println("Agent init error:", err)
-		os.Exit(1)
-	}
-	if err := a.Start(); err != nil {
-		fmt.Println("Agent error:", err)
-		os.Exit(1)
+	default:
+		fmt.Println("Starting in Standalone mode")
+		standalone.StartStandalone(flagSet)
+		return
 	}
 }
