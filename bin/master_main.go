@@ -11,7 +11,7 @@ import (
 	"time"
 
 	robot "github.com/atframework/robot-go"
-	"github.com/atframework/robot-go/master"
+	"github.com/atframework/robot-go/mode/master"
 	redis_interface "github.com/atframework/robot-go/redis"
 )
 
