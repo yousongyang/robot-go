@@ -17,18 +17,11 @@ import (
 	gatewayconn "github.com/atframework/robot-go/conn/atgateway"
 	user_interface "github.com/atframework/robot-go/data"
 	user_impl "github.com/atframework/robot-go/data/impl"
+	redis_interface "github.com/atframework/robot-go/redis"
+	solo "github.com/atframework/robot-go/solo"
 	utils "github.com/atframework/robot-go/utils"
 	"gopkg.in/yaml.v3"
 )
-
-// stringSliceFlag 支持多次指定的 flag（如 --set KEY=VAL --set FOO=BAR）
-type stringSliceFlag []string
-
-func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
-func (s *stringSliceFlag) Set(val string) error {
-	*s = append(*s, val)
-	return nil
-}
 
 func NewRobotFlagSet() *flag.FlagSet {
 	flagSet := flag.NewFlagSet(
@@ -37,28 +30,20 @@ func NewRobotFlagSet() *flag.FlagSet {
 	flagSet.Bool("help", false, "show help")
 
 	flagSet.String("config", "", "yaml config file path")
+	flagSet.String("mode", "", "run mode: (empty)=standalone, agent, solo")
 	flagSet.String("case_file", "", "case file path")
 	flagSet.Int("case_file_repeated", 1, "case file repeated time")
-	flagSet.Var(&stringSliceFlag{}, "set", "set variable for case file: --set KEY=VALUE (repeatable)")
+	flagSet.Var(&utils.StringSliceFlag{}, "set", "set variable for case file: --set KEY=VALUE (repeatable)")
 
 	// 链接层配置
-	flagSet.String("url", "ws://localhost:7001/ws/v1", "server url")
-	flagSet.String("connect-type", "websocket", "websocket, atgateway ...")
-	flagSet.String("access-token", "", "atgateway Mod: access token (enables gateway protocol)")
-	flagSet.String("key-exchange", "none", "atgateway Mod: ECDH key exchange: none, x25519, p256/p-256, p384/p-384, p521/p-521")
-	flagSet.String("crypto", "none", "atgateway Mod: crypto algorithm list: none, xxtea, aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20, chacha20-poly1305, xchacha20-poly1305")
-	flagSet.String("compression", "none", "atgateway Mod: compression algorithm list: none, zstd, lz4, snappy, zlib")
-
-	// 分布式模式
-	flagSet.String("mode", "", "run mode: (empty)=standalone, agent, solo")
-	flagSet.String("redis-addr", "", "Redis address for distributed mode")
-	flagSet.String("redis-pwd", "", "Redis password")
-	flagSet.String("master-addr", "", "Master HTTP address (agent mode)")
-	flagSet.String("agent-id", "", "Agent ID (auto-generated if empty)")
-	flagSet.String("agent-group", "", "Agent group ID (for group-based task distribution)")
-
+	conn.RegisterFlags(flagSet)
+	// Redis 相关配置
+	redis_interface.RegisterFlags(flagSet)
+	// Agent模式
+	agent.RegisterFlags(flagSet)
 	// 单节点压测模式
-	flagSet.String("report-id", "", "report ID (solo mode, default: timestamp)")
+	solo.RegisterFlags(flagSet)
+
 	return flagSet
 }
 
@@ -173,7 +158,7 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 		return
 	case "solo":
 		fmt.Println("Starting in Solo mode (single-node stress test)")
-		startSolo(flagSet)
+		solo.StartSolo(flagSet)
 		return
 	}
 
@@ -190,7 +175,7 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 			}
 			repeatedTime = int32(temp)
 		}
-		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime, GetSetVars(flagSet))
+		err := robot_case.RunCaseFileStandAlone(caseFile, repeatedTime, utils.GetSetVars(flagSet))
 		if err != nil {
 			fmt.Println("Run case file error:", err)
 			log.CloseAllLogWriters()
@@ -206,34 +191,13 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 	utils.StdoutLog("Exiting....")
 }
 
-func getFlagString(fs *flag.FlagSet, name string) string {
-	f := fs.Lookup(name)
-	if f == nil {
-		return ""
-	}
-	return f.Value.String()
-}
-
-// GetSetVars 从已解析的 FlagSet 中提取 --set KEY=VALUE 变量并返回 map。
-func GetSetVars(fs *flag.FlagSet) map[string]string {
-	f := fs.Lookup("set")
-	if f == nil {
-		return nil
-	}
-	if sv, ok := f.Value.(*stringSliceFlag); ok {
-		return robot_case.ParseSetFlags([]string(*sv))
-	}
-	return nil
-}
-
 // startAgent 以 Agent 模式启动
 func startAgent(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFunc, createMsg user_interface.UserReceiveCreateMessageFunc) {
 	cfg := agent.AgentConfig{
-		MasterAddr: getFlagString(flagSet, "master-addr"),
-		RedisAddr:  getFlagString(flagSet, "redis-addr"),
-		RedisPwd:   getFlagString(flagSet, "redis-pwd"),
-		AgentID:    getFlagString(flagSet, "agent-id"),
-		GroupID:    getFlagString(flagSet, "agent-group"),
+		RedisConfig: redis_interface.ParseConfig(flagSet),
+		MasterAddr:  utils.GetFlagString(flagSet, "master-addr"),
+		AgentID:     utils.GetFlagString(flagSet, "agent-id"),
+		GroupID:     utils.GetFlagString(flagSet, "agent-group"),
 	}
 	a, err := agent.NewAgent(cfg)
 	if err != nil {

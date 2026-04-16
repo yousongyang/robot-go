@@ -11,36 +11,41 @@ import (
 
 	robot_case "github.com/atframework/robot-go/case"
 	user_data "github.com/atframework/robot-go/data"
+	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
-	"github.com/redis/go-redis/v9"
+	utils "github.com/atframework/robot-go/utils"
 )
 
-// startSolo 以单节点压测模式运行：本地执行压测，数据写入 Redis（Master 可查看），
+func RegisterFlags(flagSet *flag.FlagSet) *flag.FlagSet {
+	flagSet.String("report-id", "", "report ID (solo mode, default: timestamp)")
+	return flagSet
+}
+
+// StartSolo 以单节点压测模式运行：本地执行压测，数据写入 Redis（Master 可查看），
 // 压测结束后在当前目录生成 {reportID}.html。
-func startSolo(flagSet *flag.FlagSet) {
-	caseFile := getFlagString(flagSet, "case_file")
+func StartSolo(flagSet *flag.FlagSet) {
+	caseFile := utils.GetFlagString(flagSet, "case_file")
 	if caseFile == "" {
 		fmt.Println("solo mode requires -case_file")
 		os.Exit(1)
 	}
 
 	repeatedTime := 1
-	if v := getFlagString(flagSet, "case_file_repeated"); v != "" {
+	if v := utils.GetFlagString(flagSet, "case_file_repeated"); v != "" {
 		if n, err := fmt.Sscanf(v, "%d", &repeatedTime); err != nil || n != 1 || repeatedTime < 1 {
 			fmt.Println("Invalid case_file_repeated value:", v)
 			os.Exit(1)
 		}
 	}
 
-	redisAddr := getFlagString(flagSet, "redis-addr")
-	redisPwd := getFlagString(flagSet, "redis-pwd")
+	redisAddr := utils.GetFlagString(flagSet, "redis-addr")
 	enableRedis := redisAddr != ""
 
 	// 连接 Redis
-	var redisClient *redis.Client
+	var redisClient redis_interface.RedisClient
 	if enableRedis {
-		redisClient, err := report_impl.NewRedisClient(redisAddr, redisPwd)
+		redisClient, err := redis_interface.NewClient(redis_interface.ParseConfig(flagSet))
 		if err != nil {
 			fmt.Printf("Connect Redis error: %v\n", err)
 			os.Exit(1)
@@ -49,7 +54,7 @@ func startSolo(flagSet *flag.FlagSet) {
 	}
 
 	// 生成唯一 ReportID
-	reportID := getFlagString(flagSet, "report-id")
+	reportID := utils.GetFlagString(flagSet, "report-id")
 	if reportID == "" {
 		var err error
 		reportID, err = report_impl.GenerateUniqueReportID(redisClient)
@@ -69,7 +74,7 @@ func startSolo(flagSet *flag.FlagSet) {
 		os.Exit(1)
 	}
 
-	lines, err := robot_case.ParseCaseFileContent(robot_case.SubstituteVariables(string(content), GetSetVars(flagSet)))
+	lines, err := robot_case.ParseCaseFileContent(robot_case.SubstituteVariables(string(content), utils.GetSetVars(flagSet)))
 	if err != nil {
 		fmt.Printf("Parse case file error: %v\n", err)
 		os.Exit(1)

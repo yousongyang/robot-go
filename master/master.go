@@ -13,18 +13,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	robot_case "github.com/atframework/robot-go/case"
+	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
 )
 
 // MasterConfig Master 启动配置
 type MasterConfig struct {
-	ListenAddr   string // HTTP 监听地址，如 ":8080"
-	RedisAddr    string
-	RedisPwd     string
+	RedisConfig redis_interface.Config
+
+	ListenAddr   string        // HTTP 监听地址，如 ":8080"
 	ReportDir    string        // HTML 报告输出目录
 	ReportExpiry time.Duration // 报告自动过期时长；0 表示永不过期（如 7*24*time.Hour = 7 天）
 }
@@ -53,7 +52,7 @@ type taskStatus struct {
 // Master 分布式压测调度端
 type Master struct {
 	cfg    MasterConfig
-	redis  *redis.Client
+	redis  redis_interface.RedisClient
 	reader *report_impl.RedisReportReader
 	gen    *report_impl.EChartsHTMLGenerator
 
@@ -70,7 +69,7 @@ type Master struct {
 
 // NewMaster 创建 Master 实例并连接 Redis
 func NewMaster(cfg MasterConfig) (*Master, error) {
-	client, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd)
+	client, err := redis_interface.NewClient(cfg.RedisConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +125,8 @@ func (m *Master) Start() error {
 		go m.startExpiryCleanup()
 	}
 	go m.startAgentCleanup()
-	log.Printf("[Master] Dashboard: http://localhost%s  Redis=%s  ReportDir=%s  Expiry=%s",
-		m.cfg.ListenAddr, m.cfg.RedisAddr, m.cfg.ReportDir, m.cfg.ReportExpiry)
+	log.Printf("[Master] Dashboard: http://localhost%s  ReportDir=%s  Expiry=%s",
+		m.cfg.ListenAddr, m.cfg.ReportDir, m.cfg.ReportExpiry)
 	return m.server.ListenAndServe()
 }
 

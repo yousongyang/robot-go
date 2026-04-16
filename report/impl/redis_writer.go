@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
+	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
+	"github.com/redis/go-redis/v9"
 )
 
 // RedisReportWriter 通过 Redis 写入报表数据（Agent 端使用）。
@@ -19,12 +19,12 @@ import (
 //	report:metrics:{reportID}:{agentID} → List   (JSON 分块)
 //	report:index                        → SortedSet (member=reportID, score=unix)
 type RedisReportWriter struct {
-	client  *redis.Client
+	client  redis_interface.RedisClient
 	agentID string
 }
 
 // NewRedisReportWriter 创建基于 Redis 的 ReportWriter。
-func NewRedisReportWriter(client *redis.Client, agentID string) *RedisReportWriter {
+func NewRedisReportWriter(client redis_interface.RedisClient, agentID string) *RedisReportWriter {
 	return &RedisReportWriter{client: client, agentID: agentID}
 }
 
@@ -102,7 +102,7 @@ var _ report.ReportWriter = (*RedisReportWriter)(nil)
 
 // GenerateUniqueReportID 使用 Redis INCR 生成全局唯一的 ReportID。
 // 格式：{timestamp}-{seq}，其中 seq 由 Redis key "report:id:seq" 自增获得。
-func GenerateUniqueReportID(client *redis.Client) (string, error) {
+func GenerateUniqueReportID(client redis_interface.RedisClient) (string, error) {
 	if client == nil {
 		return "", nil
 	}

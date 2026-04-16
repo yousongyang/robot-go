@@ -26,17 +26,6 @@ func SubstituteVariables(content string, vars map[string]string) string {
 	})
 }
 
-// ParseSetFlags 将 ["KEY=VALUE", ...] 格式的字符串切片解析为 map。
-func ParseSetFlags(sets []string) map[string]string {
-	vars := make(map[string]string, len(sets))
-	for _, s := range sets {
-		if idx := strings.IndexByte(s, '='); idx > 0 {
-			vars[s[:idx]] = s[idx+1:]
-		}
-	}
-	return vars
-}
-
 // ParseLine 解析一行参数
 // 格式: CaseName ErrorBreak IDPrefix IDStart IDEnd TargetQPS UserBatchCount RunTime [args...]
 // ErrorBreak 固定为 true，OpenIDStart 固定为 0，OpenIDPrefix 由全局参数指定

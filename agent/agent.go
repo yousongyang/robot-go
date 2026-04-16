@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,7 @@ import (
 
 	robot_case "github.com/atframework/robot-go/case"
 	user_data "github.com/atframework/robot-go/data"
+	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
 )
@@ -28,9 +30,9 @@ var ErrAgentIDConflict = errors.New("agent ID conflict: another instance with th
 
 // AgentConfig Agent 启动配置
 type AgentConfig struct {
-	MasterAddr    string // Master HTTP 地址
-	RedisAddr     string
-	RedisPwd      string
+	RedisConfig redis_interface.Config
+
+	MasterAddr    string        // Master HTTP 地址
 	AgentID       string        // 唯一标识（默认 hostname+pid）
 	GroupID       string        // 组 ID（可选，Master 按组分发任务）
 	SessionID     string        // 进程级会话 ID，由 NewAgent 自动生成；用于 Master 检测 ID 冲突
@@ -46,6 +48,13 @@ type Agent struct {
 	activeTaskCount int64                               // 当前并发执行中的任务数（原子操作）
 }
 
+func RegisterFlags(flagSet *flag.FlagSet) *flag.FlagSet {
+	flagSet.String("master-addr", "", "Master HTTP address (agent mode)")
+	flagSet.String("agent-id", "", "Agent ID (auto-generated if empty)")
+	flagSet.String("agent-group", "", "Agent group ID (for group-based task distribution)")
+	return flagSet
+}
+
 // NewAgent 创建 Agent 实例并连接 Redis
 func NewAgent(cfg AgentConfig) (*Agent, error) {
 	if cfg.AgentID == "" {
@@ -58,7 +67,7 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		cfg.SessionID = fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
 	}
 
-	redisClient, err := report_impl.NewRedisClient(cfg.RedisAddr, cfg.RedisPwd)
+	redisClient, err := redis_interface.NewClient(cfg.RedisConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +89,7 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 // Start 注册到 Master，然后进入长轮询循环（阻塞）。
 // 每次 poll 连接建立即作为在线心跳，无需独立 heartbeatLoop。
 func (a *Agent) Start() error {
-	log.Printf("[Agent] %s started, Master=%s, Redis=%s", a.cfg.AgentID, a.cfg.MasterAddr, a.cfg.RedisAddr)
+	log.Printf("[Agent] %s started, Master=%s", a.cfg.AgentID, a.cfg.MasterAddr)
 	a.pollLoop()
 	return nil
 }

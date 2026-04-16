@@ -12,6 +12,7 @@ import (
 
 	robot "github.com/atframework/robot-go"
 	"github.com/atframework/robot-go/master"
+	redis_interface "github.com/atframework/robot-go/redis"
 )
 
 func main() {
@@ -26,10 +27,9 @@ func main() {
 	flagSet.String("report-expiry", "", "auto-delete reports after duration (e.g. 168h=7d; empty=never)")
 
 	cfg := master.MasterConfig{
-		ListenAddr: flagSet.Lookup("listen").Value.String(),
-		RedisAddr:  flagSet.Lookup("redis-addr").Value.String(),
-		RedisPwd:   flagSet.Lookup("redis-pwd").Value.String(),
-		ReportDir:  flagSet.Lookup("report-dir").Value.String(),
+		RedisConfig: redis_interface.ParseConfig(flagSet),
+		ListenAddr:  flagSet.Lookup("listen").Value.String(),
+		ReportDir:   flagSet.Lookup("report-dir").Value.String(),
 	}
 	if cfg.ReportDir == "" {
 		cfg.ReportDir = "./report"

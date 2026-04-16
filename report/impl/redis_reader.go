@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
+	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
+	"github.com/redis/go-redis/v9"
 )
 
 // RedisReportReader 从 Redis 读取报表数据（Master 端使用）。
 type RedisReportReader struct {
-	client *redis.Client
+	client redis_interface.RedisClient
 }
 
 // NewRedisReportReader 创建 Redis 读取器。
-func NewRedisReportReader(client *redis.Client) *RedisReportReader {
+func NewRedisReportReader(client redis_interface.RedisClient) *RedisReportReader {
 	return &RedisReportReader{client: client}
 }
 
@@ -126,22 +126,7 @@ func (r *RedisReportReader) BarrierCount(reportID string, caseIndex int) (int64,
 	return r.client.SCard(ctx, key).Result()
 }
 
-// NewRedisClient 创建并检查一个 Redis 连接。
-func NewRedisClient(addr, password string) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("redis ping %s: %w", addr, err)
-	}
-	return client, nil
-}
-
-func scanKeys(ctx context.Context, client *redis.Client, pattern string) ([]string, error) {
+func scanKeys(ctx context.Context, client redis_interface.RedisClient, pattern string) ([]string, error) {
 	if client == nil {
 		return nil, fmt.Errorf("redis client is nil")
 	}
