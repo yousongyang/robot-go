@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strings"
 	"time"
 
 	utils "github.com/atframework/robot-go/utils"
@@ -30,18 +31,25 @@ type RedisClient interface {
 }
 
 func RegisterFlags(flagSet *flag.FlagSet) *flag.FlagSet {
-	flagSet.Var(&utils.StringSliceFlag{}, "redis-addr", "Redis address (e.g. localhost:6379). If empty, Redis is disabled.")
+	flagSet.String("redis-addr", "", "Redis address (e.g. localhost:6379). If empty, Redis is disabled.")
 	flagSet.String("redis-pwd", "", "Redis password.")
 	flagSet.String("cluster-mode", "false", "Redis cluster mode.")
 	return flagSet
 }
 
 func ParseConfig(flagSet *flag.FlagSet) Config {
-	addrs := utils.ParseSliceFlags(flagSet, "redis-addr")
+	addrs := utils.GetFlagString(flagSet, "redis-addr")
+	if addrs == "" {
+		addrs = ""
+	}
+	// 去除addrs 前后的[]
+	addrs = strings.Trim(addrs, "[")
+	addrs = strings.Trim(addrs, "]")
+	addrsList := strings.Split(addrs, " ")
 	password := flagSet.Lookup("redis-pwd").Value.String()
 	clusterMode := flagSet.Lookup("cluster-mode").Value.String() == "true"
 	return Config{
-		Addrs:       addrs,
+		Addrs:       addrsList,
 		Password:    password,
 		ClusterMode: clusterMode,
 	}

@@ -48,17 +48,6 @@ func ParseSetFlags(sets []string) map[string]string {
 	return vars
 }
 
-func ParseSliceFlags(fs *flag.FlagSet, name string) []string {
-	f := fs.Lookup(name)
-	if f == nil {
-		return nil
-	}
-	if sv, ok := f.Value.(*StringSliceFlag); ok {
-		return []string(*sv)
-	}
-	return nil
-}
-
 // GetSetVars 从已解析的 FlagSet 中提取 --set KEY=VALUE 变量并返回 map。
 func GetSetVars(fs *flag.FlagSet) map[string]string {
 	f := fs.Lookup("set")

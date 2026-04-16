@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	lu "github.com/atframework/atframe-utils-go/lang_utility"
 	base "github.com/atframework/robot-go/base"
 	_ "github.com/atframework/robot-go/cmd"
 	conn "github.com/atframework/robot-go/conn"
@@ -95,6 +96,9 @@ func LoadFlagSetFromYAML(flagSet *flag.FlagSet, yamlPath string, args []string) 
 				// 特殊处理：set 支持 map/list/string 三种 YAML 写法
 				continue
 			}
+			if lu.IsNil(value) {
+				continue
+			}
 			if flagSet.Lookup(key) != nil {
 				flagSet.Set(key, fmt.Sprintf("%v", value))
 			}
@@ -149,8 +153,6 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 	}
 
 	base.Url = flagSet.Lookup("url").Value.String()
-	fmt.Println("URL:", base.Url)
-
 	mode := flagSet.Lookup("mode").Value.String()
 	switch mode {
 	case "agent":
