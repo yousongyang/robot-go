@@ -164,7 +164,10 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
 
 <div class="header">
   <h1>&#x1F680; <span>Robot</span> Stress Test Master</h1>
-  <div class="status" id="connStatus">Connecting...</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <span style="font-size:12px;color:var(--muted)">powered by <a href="https://github.com/yousongyang/robot-go" target="_blank" style="color:var(--primary);text-decoration:none">yousongyang</a></span>
+    <div class="status" id="connStatus">Connecting...</div>
+  </div>
 </div>
 
 <div class="nav" id="nav">
@@ -174,6 +177,7 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
   <button data-page="tasks">Tasks</button>
   <button data-page="history">History</button>
   <button data-page="reports">Reports</button>
+  <button data-page="dbtool">DBTool</button>
   <button data-page="viewer" id="navViewer" style="display:none">Report Viewer</button>
 </div>
 
@@ -380,6 +384,76 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
   <iframe class="report-frame" id="reportFrame" src="about:blank"></iframe>
 </div>
 
+<!-- ========== DBTool ========== -->
+<div class="page" id="page-dbtool">
+
+<!-- Not enabled / loading state -->
+<div id="dbt-disabled" style="display:none;padding:64px;text-align:center">
+  <h2 style="color:var(--muted);font-size:20px">DBTool Not Enabled</h2>
+  <p style="color:var(--muted);margin-top:8px">No TableExtractor registered. Call <code>master.RegisterDBToolExtractor(extractor, cfg)</code> before Start().</p>
+</div>
+
+<!-- Connected: table browser & query -->
+<div id="dbt-session-panel" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="font-size:18px">&#x1F50D; Database Inspector</h2>
+    <button class="btn btn-secondary btn-sm" onclick="dbtRefreshTables()">&#x21BB; Refresh</button>
+  </div>
+
+  <!-- Config info bar -->
+  <div class="form-card" id="dbt-config-info" style="padding:12px 16px;margin-bottom:16px;font-size:13px"></div>
+
+  <!-- Presets section -->
+  <div class="table-wrap" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3>Preset Queries</h3>
+      <button class="btn btn-sm btn-primary" onclick="dbtShowNewPreset()">+ New Preset</button>
+    </div>
+    <div id="dbt-preset-form" class="form-card" style="display:none;margin-top:12px;padding:16px">
+      <h4 id="dbt-preset-form-title">New Preset</h4>
+      <div class="form-row" style="margin-top:8px">
+        <div class="form-group"><label>Preset Name *</label><input id="dbt-preset-name" placeholder="e.g. Query Player Info"></div>
+        <div class="form-group"><label>Table (Message) *</label>
+          <select id="dbt-preset-table" onchange="dbtPresetTableChanged()"><option value="">-- select --</option></select>
+        </div>
+        <div class="form-group"><label>Index *</label>
+          <select id="dbt-preset-index" onchange="dbtPresetIndexChanged()"><option value="">-- select --</option></select>
+        </div>
+      </div>
+      <div id="dbt-preset-keys" style="margin-top:8px"></div>
+      <div id="dbt-preset-extra" style="margin-top:8px"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-primary" onclick="dbtSavePreset()">Save Preset</button>
+        <button class="btn btn-secondary" onclick="dbtCancelPreset()">Cancel</button>
+      </div>
+    </div>
+    <div id="dbt-presets-list" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px"></div>
+    <div id="dbt-presets-empty" style="display:none;padding:16px;text-align:center;color:var(--muted);font-size:13px">No presets saved.</div>
+  </div>
+
+  <!-- Tables list -->
+  <div class="table-wrap" style="margin-bottom:16px">
+    <h3>Data Tables</h3>
+    <table>
+      <thead><tr><th>Message</th><th>Index</th><th>Type</th><th>Key Fields</th><th>Action</th></tr></thead>
+      <tbody id="dbt-tables-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Query panel -->
+  <div class="form-card" id="dbt-query-panel" style="display:none">
+    <h3 id="dbt-query-title">Query</h3>
+    <div id="dbt-query-fields" style="margin-top:12px"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-primary" onclick="dbtExecuteQuery()">Execute Query</button>
+      <button class="btn btn-secondary" onclick="dbtCloseQuery()">Close</button>
+    </div>
+    <pre id="dbt-query-result" style="margin-top:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:12px;font-family:'Cascadia Code',Consolas,monospace;white-space:pre-wrap;max-height:500px;overflow:auto;display:none"></pre>
+  </div>
+</div>
+
+</div>
+
 </div><!-- /container -->
 
 <script>
@@ -405,6 +479,7 @@ function switchPage(page) {
   else if (page === 'tasks') { loadTasks(); }
   else if (page === 'history') { loadHistory(); }
   else if (page === 'reports') { loadReports(); }
+  else if (page === 'dbtool') { dbtInit(); }
 }
 
 // ---------- Toast ----------
@@ -1013,6 +1088,340 @@ async function regenReportAndReload(id) {
   } catch(e) {
     toast('Regenerate failed: ' + e.message, 'error');
   }
+}
+
+// ---------- DBTool ----------
+let dbtTablesData = [];
+let dbtPresetsData = [];
+let dbtQueryCtx = { table: '', index: '', keyFields: [], indexType: '', presetKeys: null };
+
+async function dbtInit() {
+  document.getElementById('dbt-disabled').style.display = 'none';
+  document.getElementById('dbt-session-panel').style.display = 'none';
+  try {
+    const status = await api('GET', '/api/dbtool/status');
+    if (!status.enabled) {
+      document.getElementById('dbt-disabled').style.display = '';
+      return;
+    }
+    if (!status.connected) {
+      document.getElementById('dbt-disabled').style.display = '';
+      document.getElementById('dbt-disabled').innerHTML =
+        '<h2 style="color:var(--danger);font-size:20px">DBTool Connection Failed</h2>' +
+        '<p style="color:var(--muted);margin-top:8px">Extractor registered but session not connected. Check server logs.</p>';
+      return;
+    }
+    // Show config info
+    const cfg = status.config || {};
+    document.getElementById('dbt-config-info').innerHTML =
+      '<strong>PB File:</strong> ' + escapeHtml(cfg.pb_file || '') +
+      ' &nbsp;|&nbsp; <strong>Redis:</strong> ' + escapeHtml((cfg.redis_addrs || []).join(', ')) +
+      (cfg.cluster_mode ? ' <span class="badge running">cluster</span>' : '') +
+      ' &nbsp;|&nbsp; <strong>Prefix:</strong> ' + escapeHtml(cfg.record_prefix || '');
+    dbtTablesData = status.tables || [];
+    document.getElementById('dbt-session-panel').style.display = '';
+    dbtRenderTables();
+    dbtLoadPresets();
+  } catch (e) { toast('DBTool status check failed: ' + e.message, 'error'); }
+}
+
+function dbtRenderTables() {
+  const tbody = document.getElementById('dbt-tables-body');
+  const rows = [];
+  (dbtTablesData || []).forEach(t => {
+    (t.indexes || []).forEach(idx => {
+      rows.push('<tr><td><strong>' + escapeHtml(t.message_name) + '</strong></td>' +
+        '<td>' + escapeHtml(idx.name) + '</td>' +
+        '<td><span class="badge ' + (idx.type === 'KV' ? 'online' : idx.type === 'KL' ? 'running' : 'pending') + '">' + idx.type + '</span></td>' +
+        '<td style="font-size:12px">' + (idx.key_fields || []).map(escapeHtml).join(', ') + '</td>' +
+        '<td><button class="btn btn-sm btn-primary" onclick="dbtOpenQuery(\'' +
+          escapeHtml(t.message_name).replace(/'/g,"\\'") + '\',\'' +
+          escapeHtml(idx.name).replace(/'/g,"\\'") + '\')">Query</button></td></tr>');
+    });
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+function dbtOpenQuery(tableName, indexName, presetKeys, presetExtraArgs) {
+  let foundIdx = null;
+  for (const t of dbtTablesData) {
+    if (t.message_name === tableName) {
+      foundIdx = (t.indexes || []).find(i => i.name === indexName);
+      break;
+    }
+  }
+  if (!foundIdx) { toast('Index not found', 'error'); return; }
+
+  const fields = foundIdx.key_fields || [];
+  dbtQueryCtx = { table: tableName, index: indexName, keyFields: fields, indexType: foundIdx.type, presetKeys: presetKeys || null };
+  document.getElementById('dbt-query-title').textContent = tableName + ' / ' + indexName + ' (' + foundIdx.type + ')';
+
+  const container = document.getElementById('dbt-query-fields');
+  let html = '<div class="form-row">';
+  fields.forEach((kf, i) => {
+    const pk = presetKeys ? presetKeys.find(p => p.field === kf) : null;
+    if (pk && pk.fixed_value) {
+      // Fixed key: hidden input, show as badge
+      html += '<div class="form-group"><label>' + escapeHtml(kf) + (pk.alias ? ' (' + escapeHtml(pk.alias) + ')' : '') +
+        '</label><input id="dbt-key-' + i + '" value="' + escapeHtml(pk.fixed_value) + '" readonly ' +
+        'style="background:var(--surface);color:var(--muted);cursor:not-allowed"></div>';
+    } else {
+      // Editable key: show alias if present
+      const label = pk && pk.alias ? escapeHtml(kf) + ' <span style="color:var(--primary)">(' + escapeHtml(pk.alias) + ')</span>' : escapeHtml(kf);
+      html += '<div class="form-group"><label>' + label + ' *</label><input id="dbt-key-' + i + '" placeholder="' + escapeHtml(pk && pk.alias ? pk.alias : kf) + '"></div>';
+    }
+  });
+  html += '</div>';
+
+  if (foundIdx.type === 'KL') {
+    const preExtra = presetExtraArgs && presetExtraArgs.length > 0 ? presetExtraArgs[0] : '';
+    html += '<div class="form-group"><label>List Index (optional, empty=all)</label><input id="dbt-extra-0" placeholder="e.g. 0" value="' + escapeHtml(preExtra) + '"></div>';
+  } else if (foundIdx.type === 'SORTED_SET') {
+    const preCmd = presetExtraArgs && presetExtraArgs.length > 0 ? presetExtraArgs[0] : 'count';
+    html += '<div class="form-group"><label>Sub Command</label><select id="dbt-ss-cmd" onchange="dbtUpdateSSFields()">' +
+      ['count','rank','rrank','score','rscore'].map(c =>
+        '<option value="' + c + '"' + (c === preCmd ? ' selected' : '') + '>' + c + (c.includes('rank') ? (c[0]==='r'?' (DESC)':' (ASC)') : c.includes('score') ? (c[0]==='r'?' (DESC)':' (ASC)') : '') + '</option>'
+      ).join('') + '</select></div>';
+    html += '<div id="dbt-ss-extra"></div>';
+  }
+  container.innerHTML = html;
+
+  if (foundIdx.type === 'SORTED_SET') dbtUpdateSSFields();
+
+  document.getElementById('dbt-query-panel').style.display = '';
+  document.getElementById('dbt-query-result').style.display = 'none';
+  // Focus first non-readonly input
+  for (let i = 0; i < fields.length; i++) {
+    const el = document.getElementById('dbt-key-' + i);
+    if (el && !el.readOnly) { setTimeout(() => el.focus(), 100); break; }
+  }
+}
+
+function dbtUpdateSSFields() {
+  const cmd = document.getElementById('dbt-ss-cmd').value;
+  const container = document.getElementById('dbt-ss-extra');
+  let html = '';
+  if (cmd === 'rank' || cmd === 'rrank') {
+    html = '<div class="form-row"><div class="form-group"><label>Start</label><input id="dbt-ss-start" value="0"></div>' +
+      '<div class="form-group"><label>Stop</label><input id="dbt-ss-stop" value="9"></div></div>';
+  } else if (cmd === 'score' || cmd === 'rscore') {
+    html = '<div class="form-row"><div class="form-group"><label>Min</label><input id="dbt-ss-min" value="-inf"></div>' +
+      '<div class="form-group"><label>Max</label><input id="dbt-ss-max" value="+inf"></div></div>' +
+      '<div class="form-row"><div class="form-group"><label>Offset</label><input id="dbt-ss-offset" value="0"></div>' +
+      '<div class="form-group"><label>Count</label><input id="dbt-ss-count" value="20"></div></div>';
+  }
+  container.innerHTML = html;
+}
+
+function dbtCloseQuery() {
+  document.getElementById('dbt-query-panel').style.display = 'none';
+}
+
+async function dbtExecuteQuery() {
+  const keyValues = [];
+  for (let i = 0; i < dbtQueryCtx.keyFields.length; i++) {
+    const el = document.getElementById('dbt-key-' + i);
+    if (!el || !el.value.trim()) {
+      toast('Key field "' + dbtQueryCtx.keyFields[i] + '" is required', 'error');
+      return;
+    }
+    keyValues.push(el.value.trim());
+  }
+
+  const extraArgs = [];
+  if (dbtQueryCtx.indexType === 'KL') {
+    const el = document.getElementById('dbt-extra-0');
+    if (el && el.value.trim()) extraArgs.push(el.value.trim());
+  } else if (dbtQueryCtx.indexType === 'SORTED_SET') {
+    const cmd = document.getElementById('dbt-ss-cmd').value;
+    extraArgs.push(cmd);
+    if (cmd === 'rank' || cmd === 'rrank') {
+      extraArgs.push((document.getElementById('dbt-ss-start')||{}).value||'0');
+      extraArgs.push((document.getElementById('dbt-ss-stop')||{}).value||'9');
+    } else if (cmd === 'score' || cmd === 'rscore') {
+      extraArgs.push((document.getElementById('dbt-ss-min')||{}).value||'-inf');
+      extraArgs.push((document.getElementById('dbt-ss-max')||{}).value||'+inf');
+      extraArgs.push((document.getElementById('dbt-ss-offset')||{}).value||'0');
+      extraArgs.push((document.getElementById('dbt-ss-count')||{}).value||'20');
+    }
+  }
+
+  const resultEl = document.getElementById('dbt-query-result');
+  resultEl.style.display = '';
+  resultEl.textContent = 'Querying...';
+
+  try {
+    const res = await api('POST', '/api/dbtool/query', {
+      table: dbtQueryCtx.table,
+      index: dbtQueryCtx.index,
+      key_values: keyValues,
+      extra_args: extraArgs.length > 0 ? extraArgs : undefined
+    });
+    if (res.error) {
+      resultEl.textContent = 'Error: ' + res.error;
+      resultEl.style.color = 'var(--danger)';
+    } else {
+      resultEl.textContent = res.result || '(empty)';
+      resultEl.style.color = 'var(--text)';
+    }
+  } catch (e) {
+    resultEl.textContent = 'Error: ' + e.message;
+    resultEl.style.color = 'var(--danger)';
+  }
+}
+
+async function dbtRefreshTables() {
+  try {
+    const tables = await api('GET', '/api/dbtool/tables');
+    dbtTablesData = tables || [];
+    dbtRenderTables();
+    toast('Tables refreshed', 'success');
+  } catch (e) { toast('Refresh failed: ' + e.message, 'error'); }
+}
+
+// ---------- DBTool Presets ----------
+async function dbtLoadPresets() {
+  try {
+    const list = await api('GET', '/api/dbtool/presets');
+    dbtPresetsData = list || [];
+    dbtRenderPresets();
+  } catch (e) { /* ignore */ }
+}
+
+function dbtRenderPresets() {
+  const container = document.getElementById('dbt-presets-list');
+  const empty = document.getElementById('dbt-presets-empty');
+  if (dbtPresetsData.length === 0) {
+    container.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+  container.innerHTML = dbtPresetsData.map(p => {
+    const fixedCount = (p.keys || []).filter(k => k.fixed_value).length;
+    const totalKeys = (p.keys || []).length;
+    const inputCount = totalKeys - fixedCount;
+    return '<div style="border:1px solid var(--border);border-radius:8px;padding:12px 16px;background:var(--surface);min-width:200px;max-width:320px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+        '<strong style="font-size:14px;cursor:pointer;color:var(--primary)" onclick="dbtRunPreset(\'' + escapeHtml(p.name).replace(/'/g,"\\'") + '\')">' + escapeHtml(p.name) + '</strong>' +
+        '<button class="btn btn-sm btn-danger" onclick="dbtDeletePreset(\'' + escapeHtml(p.name).replace(/'/g,"\\'") + '\')" style="padding:2px 8px;font-size:11px">&times;</button>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--muted)">' + escapeHtml(p.table) + ' / ' + escapeHtml(p.index) + '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px">' +
+        (fixedCount > 0 ? fixedCount + ' fixed, ' : '') + inputCount + ' input field(s)' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function dbtRunPreset(name) {
+  const preset = dbtPresetsData.find(p => p.name === name);
+  if (!preset) { toast('Preset not found', 'error'); return; }
+  dbtOpenQuery(preset.table, preset.index, preset.keys, preset.extra_args);
+}
+
+function dbtShowNewPreset() {
+  document.getElementById('dbt-preset-form-title').textContent = 'New Preset';
+  document.getElementById('dbt-preset-name').value = '';
+  document.getElementById('dbt-preset-name').disabled = false;
+  // Populate table dropdown
+  const sel = document.getElementById('dbt-preset-table');
+  sel.innerHTML = '<option value="">-- select --</option>' +
+    dbtTablesData.map(t => '<option value="' + escapeHtml(t.message_name) + '">' + escapeHtml(t.message_name) + '</option>').join('');
+  document.getElementById('dbt-preset-index').innerHTML = '<option value="">-- select --</option>';
+  document.getElementById('dbt-preset-keys').innerHTML = '';
+  document.getElementById('dbt-preset-extra').innerHTML = '';
+  document.getElementById('dbt-preset-form').style.display = '';
+}
+
+function dbtCancelPreset() {
+  document.getElementById('dbt-preset-form').style.display = 'none';
+}
+
+function dbtPresetTableChanged() {
+  const tableName = document.getElementById('dbt-preset-table').value;
+  const idxSel = document.getElementById('dbt-preset-index');
+  document.getElementById('dbt-preset-keys').innerHTML = '';
+  document.getElementById('dbt-preset-extra').innerHTML = '';
+  const t = dbtTablesData.find(t => t.message_name === tableName);
+  if (!t) { idxSel.innerHTML = '<option value="">-- select --</option>'; return; }
+  idxSel.innerHTML = '<option value="">-- select --</option>' +
+    (t.indexes || []).map(idx => '<option value="' + escapeHtml(idx.name) + '">' + escapeHtml(idx.name) + ' (' + idx.type + ')</option>').join('');
+}
+
+function dbtPresetIndexChanged() {
+  const tableName = document.getElementById('dbt-preset-table').value;
+  const indexName = document.getElementById('dbt-preset-index').value;
+  const keysDiv = document.getElementById('dbt-preset-keys');
+  const extraDiv = document.getElementById('dbt-preset-extra');
+  keysDiv.innerHTML = '';
+  extraDiv.innerHTML = '';
+  if (!tableName || !indexName) return;
+
+  const t = dbtTablesData.find(t => t.message_name === tableName);
+  const idx = t ? (t.indexes || []).find(i => i.name === indexName) : null;
+  if (!idx) return;
+
+  let html = '<p style="font-size:13px;color:var(--muted);margin-bottom:8px">Configure key fields (leave Fixed Value empty to make it an input field):</p>';
+  (idx.key_fields || []).forEach((kf, i) => {
+    html += '<div class="form-row">' +
+      '<div class="form-group"><label>Field</label><input value="' + escapeHtml(kf) + '" readonly style="background:var(--surface);color:var(--muted);cursor:not-allowed"></div>' +
+      '<div class="form-group"><label>Alias</label><input id="dbt-pk-alias-' + i + '" placeholder="Display name (optional)"></div>' +
+      '<div class="form-group"><label>Fixed Value</label><input id="dbt-pk-fixed-' + i + '" placeholder="Leave empty for user input"></div>' +
+    '</div>';
+  });
+  keysDiv.innerHTML = html;
+  keysDiv.dataset.fields = JSON.stringify(idx.key_fields);
+
+  // Extra args for sorted set
+  if (idx.type === 'SORTED_SET') {
+    extraDiv.innerHTML = '<div class="form-group"><label>Default Sub Command</label><select id="dbt-pk-sscmd">' +
+      '<option value="">none</option><option value="count">count</option><option value="rank">rank</option>' +
+      '<option value="rrank">rrank</option><option value="score">score</option><option value="rscore">rscore</option></select></div>';
+  }
+}
+
+async function dbtSavePreset() {
+  const name = document.getElementById('dbt-preset-name').value.trim();
+  const table = document.getElementById('dbt-preset-table').value;
+  const index = document.getElementById('dbt-preset-index').value;
+  if (!name || !table || !index) { toast('Name, Table, and Index are required', 'error'); return; }
+
+  const fieldsJson = document.getElementById('dbt-preset-keys').dataset.fields;
+  if (!fieldsJson) { toast('Please select an index first', 'error'); return; }
+  const fields = JSON.parse(fieldsJson);
+
+  const keys = fields.map((kf, i) => {
+    const alias = (document.getElementById('dbt-pk-alias-' + i) || {}).value || '';
+    const fixed = (document.getElementById('dbt-pk-fixed-' + i) || {}).value || '';
+    const obj = { field: kf };
+    if (alias.trim()) obj.alias = alias.trim();
+    if (fixed.trim()) obj.fixed_value = fixed.trim();
+    return obj;
+  });
+
+  const extraArgs = [];
+  const sscmd = document.getElementById('dbt-pk-sscmd');
+  if (sscmd && sscmd.value) extraArgs.push(sscmd.value);
+
+  try {
+    await api('POST', '/api/dbtool/presets', {
+      name, table, index, keys,
+      extra_args: extraArgs.length > 0 ? extraArgs : undefined
+    });
+    toast('Preset saved: ' + name, 'success');
+    document.getElementById('dbt-preset-form').style.display = 'none';
+    dbtLoadPresets();
+  } catch (e) { toast('Save preset failed: ' + e.message, 'error'); }
+}
+
+async function dbtDeletePreset(name) {
+  if (!confirm('Delete preset "' + name + '"?')) return;
+  try {
+    await api('DELETE', '/api/dbtool/presets/' + encodeURIComponent(name));
+    toast('Preset deleted', 'success');
+    dbtLoadPresets();
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
 }
 
 // ---------- Auto Refresh ----------

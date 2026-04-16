@@ -169,9 +169,238 @@ curl -X POST http://localhost:8080/api/tasks \
 | `DELETE` | `/api/reports/{id}` | 删除报告（Redis + 本地文件） |
 | `GET` | `/reports/{id}/view` | 在浏览器中查看 HTML 报告 |
 
-## 命令行参数
+## DBTool — 数据库调试工具
 
-### 通用参数
+DBTool 是 robot-go 内置的 Redis 数据检索工具，支持**交互式命令行（CLI）**和**Master Web Dashboard 可视化界面**两种使用方式。它通过加载业务方编译的 `.pb`（`FileDescriptorSet`）文件，自动识别带有数据库表配置的 protobuf message，并以可读的 JSON 格式展示 Redis 中存储的数据。
+
+### 架构设计
+
+DBTool 框架本身不依赖任何具体的 protobuf 扩展定义。所有"如何从 MessageDescriptor 中提取数据库索引"的逻辑，由业务方通过 `TableExtractor` 接口注入：
+
+```go
+// mode/dbtool/table_index.go
+type TableExtractor interface {
+    ExtractTableIndexes(md protoreflect.MessageDescriptor) []TableIndex
+}
+```
+
+`TableIndex` 描述一个索引的完整信息：
+
+```go
+type TableIndex struct {
+    Name          string    // 索引名
+    Type          IndexType // KV / KL / SORTED_SET
+    EnableCAS     bool
+    MaxListLength uint32
+    KeyFields     []string  // 组成 Redis key 的字段列表
+}
+```
+
+业务方实现 `TableExtractor` 后，通过以下全局函数注册（CLI 模式和 Master Web 模式均使用同一入口）：
+
+```go
+dbtool.RegisterDatabaseTableExtractor(myExtractor)
+```
+
+### CLI 交互模式
+
+**1. 在业务入口注册 `TableExtractor` 和 flags：**
+
+```go
+package main
+
+import (
+    "github.com/atframework/robot-go/mode/dbtool"
+    robot "github.com/atframework/robot-go"
+)
+
+// 实现 TableExtractor
+type MyExtractor struct{}
+
+func (e *MyExtractor) ExtractTableIndexes(md protoreflect.MessageDescriptor) []dbtool.TableIndex {
+    // 检查 md 是否带有数据库表 option，提取 index 列表
+    // 返回 nil 表示该 message 不是数据库表
+    return nil
+}
+
+func main() {
+    dbtool.RegisterDatabaseTableExtractor(&MyExtractor{})
+
+    flagSet := robot.NewRobotFlagSet()
+    flagSet.Parse(os.Args[1:])
+    robot.StartRobot(flagSet, UnpackMessage, NewCSMsg)
+}
+```
+
+**2. 启动 DBTool CLI：**
+
+```bash
+go run . -mode dbtool \
+    --dbtool-pb-file ./descriptors.pb \
+    --dbtool-redis-addr localhost:6379 \
+    --dbtool-record-prefix default
+```
+
+集群模式：
+
+```bash
+go run . -mode dbtool \
+    --dbtool-pb-file ./descriptors.pb \
+    --dbtool-redis-addr "192.168.1.1:7001 192.168.1.2:7001 192.168.1.3:7001" \
+    --dbtool-redis-cluster true \
+    --dbtool-record-prefix default
+```
+
+#### DBTool CLI 专属参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--dbtool-pb-file` | — | **必填**，`.pb` 文件路径（`protoc --descriptor_set_out` 生成） |
+| `--dbtool-redis-addr` | `localhost:6379` | Redis 地址，集群模式下空格分隔多个地址 |
+| `--dbtool-redis-password` | 空 | Redis 密码 |
+| `--dbtool-redis-cluster` | `false` | 是否使用 Redis Cluster 模式 |
+| `--dbtool-record-prefix` | 空（见下） | Redis key 前缀（优先级高于 random-prefix） |
+| `--dbtool-random-prefix` | `false` | 设为 `true` 时使用机器稳定 ID 作为前缀 |
+| `--dbtool-redis-version` | `0` | random-prefix 版本号（与 `dbtool-random-prefix=true` 配合使用） |
+
+#### 生成 .pb 文件
+
+```bash
+# 收集所有 proto，生成 FileDescriptorSet
+protoc \
+    --proto_path=. \
+    --descriptor_set_out=descriptors.pb \
+    --include_imports \
+    $(find . -name "*.proto" | tr '\n' ' ')
+```
+
+#### CLI 交互命令
+
+DBTool 启动后进入交互式 shell，命令按 `{message}.{indexName}` 自动注册，支持 Tab 补全。
+
+| 命令示例 | 说明 |
+|----------|------|
+| `help` | 列出所有可用命令 |
+| `PlayerInfo.primary <player_id>` | 查询 KV 类型索引（直接返回 protobuf JSON） |
+| `PlayerInfo.list <player_id>` | 查询 KL 类型（返回整个列表） |
+| `PlayerInfo.list <player_id> 0` | 查询 KL 第 0 个元素 |
+| `PlayerInfo.rank_index <player_id> rank 0 9` | 查询 SortedSet，取排名 0~9 的成员（ASC） |
+| `PlayerInfo.rank_index <player_id> rrank 0 9` | 同上，但降序 |
+| `PlayerInfo.rank_index <player_id> count` | 查询 SortedSet 成员数量 |
+| `PlayerInfo.rank_index <player_id> score -inf +inf 0 20` | 按 score 区间查询 |
+
+### Master Web Dashboard 模式
+
+Master 模式下，DBTool 以 Web UI 的形式集成在 Dashboard 的 **DBTool** 标签页中，无需命令行即可完成数据查询。
+
+**启用方式（在业务入口注册，`StartMaster` 之前调用）：**
+
+```go
+// 1. 注册 TableExtractor（与 CLI 模式相同的全局函数）
+dbtool.RegisterDatabaseTableExtractor(&MyExtractor{})
+
+// 2. 启动 Master（由框架在 StartMaster 内自动通过 --dbtool-* flags 加载配置）
+m, _ := master.NewMaster(cfg)
+m.Start()
+```
+
+对应的启动命令：
+
+```bash
+./your-binary -mode master \
+    -listen :8080 \
+    -redis-addr localhost:6379 \
+    --dbtool-pb-file ./descriptors.pb \
+    --dbtool-redis-addr localhost:6379 \
+    --dbtool-record-prefix default
+```
+
+Master 在 `Start()` 时自动连接 DBTool Redis 并加载 `.pb` 文件，失败时仅打印 warn 日志，不影响 Master 的压测核心功能。
+
+#### Web DBTool 功能
+
+打开 Master Dashboard（默认 `http://localhost:8080`）切换到 **DBTool** 标签：
+
+**状态检查**：进入页面时自动检查 DBTool 是否启用、是否连接成功，未启用时显示友好提示。
+
+**数据表浏览**：自动列出 `.pb` 中发现的所有数据库表及其索引，显示：
+
+| 列 | 说明 |
+|----|------|
+| Message | protobuf message 名 |
+| Index | 索引名 |
+| Type | `KV` / `KL` / `SORTED_SET` |
+| Key Fields | 组成 key 的字段列表 |
+
+点击 **Query** 按钮弹出查询面板，根据索引类型自动生成对应的输入框：
+
+- **KV**：仅显示 key 字段输入框
+- **KL**：key 字段 + 可选的列表下标（空表示查全部）
+- **SORTED_SET**：key 字段 + 子命令选择（count / rank / rrank / score / rscore）+ 对应的范围参数
+
+#### Web DBTool API
+
+| Method | Path | 说明 |
+|--------|------|------|
+| `GET` | `/api/dbtool/status` | 查询 DBTool 是否启用、是否连接，返回配置信息和表列表 |
+| `GET` | `/api/dbtool/tables` | 列出所有数据表及索引信息 |
+| `POST` | `/api/dbtool/query` | 执行查询（返回 protobuf JSON 文本） |
+| `GET` | `/api/dbtool/presets` | 列出所有预查询方案 |
+| `POST` | `/api/dbtool/presets` | 保存预查询方案 |
+| `DELETE` | `/api/dbtool/presets/{name}` | 删除预查询方案 |
+
+查询请求体：
+
+```json
+{
+  "table": "PlayerInfo",
+  "index": "primary",
+  "key_values": ["123456"],
+  "extra_args": []
+}
+```
+
+#### 预查询方案 (Presets)
+
+Presets 适用于为非开发人员提供固定场景的快捷查询入口。每个 Preset 绑定具体的 message + index，并可为每个 key 字段配置：
+
+| 字段属性 | 说明 |
+|----------|------|
+| `alias` | 别名，面向非技术用户的友好名称（如"玩家ID"替代"player_id"） |
+| `fixed_value` | 定死值，点击方案时该字段不显示输入框（自动填入） |
+
+**保存 Preset API：**
+
+```json
+{
+  "name": "查询玩家背包",
+  "table": "PlayerBag",
+  "index": "primary",
+  "keys": [
+    { "field": "server_id", "fixed_value": "1001" },
+    { "field": "player_id", "alias": "玩家ID" }
+  ]
+}
+```
+
+以上 Preset 保存后：点击方案名时，`server_id` 自动填入 `1001`（灰色只读），用户只需输入"玩家ID"。
+
+Presets 存储在 Master 的 Redis 中（Hash key `dbtool:presets`），重启 Master 后自动恢复。
+
+### 目录结构
+
+```
+mode/dbtool/
+├── table_index.go    # 核心类型：IndexType、TableIndex、TableInfo、TableExtractor、Registry
+├── dbtool.go         # CLI 入口：RegisterFlags、LoadDBToolConfig、Start
+├── shell.go          # 交互式 shell：使用 utils.ReadLine，动态注册命令
+├── querier.go        # Redis 查询逻辑：QueryKV、QueryKL、QuerySortedSet*
+mode/master/
+├── dbtool_session.go # Web 模式：DBToolConfig、DBToolManager、DBToolSession、Preset CRUD
+├── dbtool_handlers.go # HTTP API handlers（status/tables/query/presets）
+```
+
+## 命令行参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|

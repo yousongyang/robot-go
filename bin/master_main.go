@@ -8,11 +8,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
 	robot "github.com/atframework/robot-go"
 	"github.com/atframework/robot-go/mode/master"
-	redis_interface "github.com/atframework/robot-go/redis"
 )
 
 func main() {
@@ -22,33 +20,5 @@ func main() {
 		return
 	}
 
-	flagSet.String("listen", ":8080", "HTTP listen address (master mode)")
-	flagSet.String("report-dir", "./report", "HTML report output directory")
-	flagSet.String("report-expiry", "", "auto-delete reports after duration (e.g. 168h=7d; empty=never)")
-
-	cfg := master.MasterConfig{
-		RedisConfig: redis_interface.ParseConfig(flagSet),
-		ListenAddr:  flagSet.Lookup("listen").Value.String(),
-		ReportDir:   flagSet.Lookup("report-dir").Value.String(),
-	}
-	if cfg.ReportDir == "" {
-		cfg.ReportDir = "./report"
-	}
-	if v := flagSet.Lookup("report-expiry").Value.String(); v != "" && v != "0" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.ReportExpiry = d
-		} else {
-			fmt.Fprintf(os.Stderr, "invalid report-expiry %q: %v\n", v, err)
-		}
-	}
-
-	m, err := master.NewMaster(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "init master: %v\n", err)
-		os.Exit(1)
-	}
-	if err := m.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "master: %v\n", err)
-		os.Exit(1)
-	}
+	master.StartMaster(flagSet)
 }

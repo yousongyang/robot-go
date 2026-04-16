@@ -16,6 +16,7 @@ import (
 	user_impl "github.com/atframework/robot-go/data/impl"
 	agent "github.com/atframework/robot-go/mode/agent"
 	dbtool "github.com/atframework/robot-go/mode/dbtool"
+	master "github.com/atframework/robot-go/mode/master"
 	solo "github.com/atframework/robot-go/mode/solo"
 	standalone "github.com/atframework/robot-go/mode/standalone"
 	redis_interface "github.com/atframework/robot-go/redis"
@@ -45,6 +46,8 @@ func NewRobotFlagSet() *flag.FlagSet {
 	agent.RegisterFlags(flagSet)
 	// 单节点压测模式
 	solo.RegisterFlags(flagSet)
+	// Master模式
+	master.RegisterFlags(flagSet)
 
 	return flagSet
 }
@@ -166,6 +169,10 @@ func StartRobot(flagSet *flag.FlagSet, unpack user_interface.UserReceiveUnpackFu
 	case "dbtool":
 		fmt.Println("Starting in DBTool mode")
 		dbtool.Start(flagSet)
+		return
+	case "master":
+		fmt.Println("Starting in Master mode")
+		master.StartMaster(flagSet)
 		return
 	default:
 		fmt.Println("Starting in Standalone mode")

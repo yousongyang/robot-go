@@ -3,6 +3,7 @@ package master
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	robot_case "github.com/atframework/robot-go/case"
+	dbtool "github.com/atframework/robot-go/mode/dbtool"
 	redis_interface "github.com/atframework/robot-go/redis"
 	"github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
@@ -64,7 +66,8 @@ type Master struct {
 	agentCancelChs map[string]chan string                     // agentID -> cancel 信号（reportID）
 	mu             sync.RWMutex
 
-	server *http.Server
+	dbtoolMgr *DBToolManager
+	server    *http.Server
 }
 
 // NewMaster 创建 Master 实例并连接 Redis
@@ -85,6 +88,47 @@ func NewMaster(cfg MasterConfig) (*Master, error) {
 		taskCancels:    make(map[string]context.CancelFunc),
 		agentCancelChs: make(map[string]chan string),
 	}, nil
+}
+
+func RegisterFlags(flagSet *flag.FlagSet) {
+	flagSet.String("listen", ":8080", "HTTP listen address (master mode)")
+	flagSet.String("report-dir", "./report", "HTML report output directory")
+	flagSet.String("report-expiry", "", "auto-delete reports after duration (e.g. 168h=7d; empty=never)")
+}
+
+func StartMaster(flagSet *flag.FlagSet) {
+	cfg := MasterConfig{
+		RedisConfig: redis_interface.ParseConfig(flagSet),
+		ListenAddr:  flagSet.Lookup("listen").Value.String(),
+		ReportDir:   flagSet.Lookup("report-dir").Value.String(),
+	}
+	if cfg.ReportDir == "" {
+		cfg.ReportDir = "./report"
+	}
+	if v := flagSet.Lookup("report-expiry").Value.String(); v != "" && v != "0" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.ReportExpiry = d
+		} else {
+			fmt.Fprintf(os.Stderr, "invalid report-expiry %q: %v\n", v, err)
+		}
+	}
+
+	m, err := NewMaster(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init master: %v\n", err)
+		os.Exit(1)
+	}
+
+	dbToolConfig, err := dbtool.LoadDBToolConfig(flagSet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Master] Load DBTool config failed: %v", err)
+	} else {
+		m.dbtoolMgr = NewDBToolManager(dbToolConfig, m.redis)
+	}
+
+	if err := m.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "master: %v\n", err)
+	}
 }
 
 // Start 启动 HTTP API 服务（阻塞）
@@ -116,10 +160,24 @@ func (m *Master) Start() error {
 	// Report viewer (serves generated HTML files)
 	mux.HandleFunc("GET /reports/{id}/view", m.handleViewReport)
 
+	// DBTool API
+	mux.HandleFunc("GET /api/dbtool/status", m.handleDBToolStatus)
+	mux.HandleFunc("GET /api/dbtool/tables", m.handleDBToolTables)
+	mux.HandleFunc("POST /api/dbtool/query", m.handleDBToolQuery)
+	mux.HandleFunc("GET /api/dbtool/presets", m.handleDBToolListPresets)
+	mux.HandleFunc("POST /api/dbtool/presets", m.handleDBToolSavePreset)
+	mux.HandleFunc("DELETE /api/dbtool/presets/{name}", m.handleDBToolDeletePreset)
+
 	m.server = &http.Server{
 		Addr:              m.cfg.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if m.dbtoolMgr != nil {
+		if err := m.dbtoolMgr.Connect(); err != nil {
+			log.Printf("[Master] DBTool connect failed: %v", err)
+			m.dbtoolMgr = nil
+		}
 	}
 	if m.cfg.ReportExpiry > 0 {
 		go m.startExpiryCleanup()
@@ -132,6 +190,9 @@ func (m *Master) Start() error {
 
 // Stop 优雅停机
 func (m *Master) Stop() error {
+	if m.dbtoolMgr != nil {
+		m.dbtoolMgr.Close()
+	}
 	if m.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
