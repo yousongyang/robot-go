@@ -27,10 +27,10 @@ func NewHistoryManager(file string, cleanDuplicates bool) *HistoryManager {
 	}
 	h.load()
 	if h.needCleanDuplicates {
-		h.cleanDuplicates() // ✅ 启动时自动清理重复记录
+		h.cleanDuplicates() // 启动时自动清理重复记录
 	}
-	h.trimToMax() // ✅ 启动时控制最大长度
-	h.save()      // ✅ 清理后立即保存
+	h.trimToMax() // 启动时控制最大长度
+	h.save()      // 清理后立即保存
 	return h
 }
 

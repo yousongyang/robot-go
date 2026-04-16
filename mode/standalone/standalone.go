@@ -7,6 +7,7 @@ import (
 
 	log "github.com/atframework/atframe-utils-go/log"
 	robot_case "github.com/atframework/robot-go/case"
+	cmd "github.com/atframework/robot-go/cmd"
 	user_data "github.com/atframework/robot-go/data"
 	utils "github.com/atframework/robot-go/utils"
 )
@@ -26,7 +27,7 @@ func StartStandalone(flagSet *flag.FlagSet) {
 			os.Exit(1)
 		}
 	} else {
-		utils.ReadLine()
+		utils.ReadLine(cmd.MutableCommandRoot())
 	}
 
 	utils.StdoutLog("Closing all pending connections")

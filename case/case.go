@@ -15,6 +15,7 @@ import (
 	lu "github.com/atframework/atframe-utils-go/lang_utility"
 	log "github.com/atframework/atframe-utils-go/log"
 	base "github.com/atframework/robot-go/base"
+	cmd "github.com/atframework/robot-go/cmd"
 	user_data "github.com/atframework/robot-go/data"
 	report "github.com/atframework/robot-go/report"
 	report_impl "github.com/atframework/robot-go/report/impl"
@@ -34,7 +35,7 @@ var (
 )
 
 func init() {
-	utils.RegisterCommand([]string{"run-case-file"}, CmdRunCaseFile, "<file> <repeated_time>", "运行用例文件", AutoCompleteCaseName, 0)
+	utils.RegisterCommand(cmd.MutableCommandRoot(), []string{"run-case-file"}, CmdRunCaseFile, "<file> <repeated_time>", "运行用例文件", AutoCompleteCaseName, 0)
 }
 
 func CmdRunCaseFile(task base.TaskActionImpl, cmd []string) string {

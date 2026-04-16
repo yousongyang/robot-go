@@ -123,20 +123,13 @@ func AllHelpString(node *CommandNode) string {
 	return print3Cols(ret)
 }
 
-var root *CommandNode
-
-func MutableCommandRoot() *CommandNode {
-	if root != nil {
-		return root
-	}
-
-	root = &CommandNode{Children: make(map[string]*CommandNode)}
-	return root
+func CreateCommandNode() *CommandNode {
+	return &CommandNode{Children: make(map[string]*CommandNode)}
 }
 
-func RegisterCommand(path []string, fn CommandFunc, argsInfo string, desc string,
+func RegisterCommand(root *CommandNode, path []string, fn CommandFunc, argsInfo string, desc string,
 	dynamicComplete readline.DynamicCompleteFunc, timeout time.Duration) {
-	current := MutableCommandRoot()
+	current := root
 	for _, key := range path {
 		if current.Children[strings.ToLower(key)] == nil {
 			current.Children[strings.ToLower(key)] = &CommandNode{
@@ -155,9 +148,9 @@ func RegisterCommand(path []string, fn CommandFunc, argsInfo string, desc string
 	current.Timeout = timeout
 }
 
-func RegisterCommandDefaultTimeout(path []string, fn CommandFunc, argsInfo string, desc string,
+func RegisterCommandDefaultTimeout(root *CommandNode, path []string, fn CommandFunc, argsInfo string, desc string,
 	dynamicComplete readline.DynamicCompleteFunc) {
-	current := MutableCommandRoot()
+	current := root
 	for _, key := range path {
 		if current.Children[strings.ToLower(key)] == nil {
 			current.Children[strings.ToLower(key)] = &CommandNode{
@@ -177,8 +170,8 @@ func RegisterCommandDefaultTimeout(path []string, fn CommandFunc, argsInfo strin
 }
 
 // FindCommand 根据路径查找命令节点
-func FindCommand(path string) (args []string, node *CommandNode) {
-	node = MutableCommandRoot()
+func FindCommand(root *CommandNode, path string) (args []string, node *CommandNode) {
+	node = root
 	args = splitArgs(path)
 	for {
 		if len(node.Children) == 0 {
@@ -199,8 +192,8 @@ func FindCommand(path string) (args []string, node *CommandNode) {
 }
 
 // 构建自动补全器
-func NewCompleter() *readline.PrefixCompleter {
-	return buildCompleterFromNode(MutableCommandRoot(), "")
+func NewCompleter(root *CommandNode) *readline.PrefixCompleter {
+	return buildCompleterFromNode(root, "")
 }
 
 // 递归构建 PrefixCompleter
@@ -285,15 +278,15 @@ func splitArgs(input string) []string {
 }
 
 // ExecuteCommand 执行命令
-func ExecuteCommand(mgr *base.TaskActionManager, rl *readline.Instance, input string) {
+func ExecuteCommand(root *CommandNode, mgr *base.TaskActionManager, rl *readline.Instance, input string) {
 	tokens := strings.Fields(input)
 	if len(tokens) == 0 {
 		return
 	}
-	args, node := FindCommand(input)
-	if node == MutableCommandRoot() {
+	args, node := FindCommand(root, input)
+	if node == root {
 		if input == "help" {
-			fmt.Print(AllHelpString(MutableCommandRoot()))
+			fmt.Print(AllHelpString(root))
 			return
 		}
 		fmt.Println("未知命令:", input)
@@ -337,15 +330,15 @@ func GetCurrentReadlineInstance() *readline.Instance {
 	return _readlineInstance.Load()
 }
 
-func ReadLine() {
+func ReadLine(root *CommandNode) {
 	// 注册命令
-	RegisterCommandDefaultTimeout([]string{"quit"}, QuitCmd, "", "退出", nil)
-	RegisterCommandDefaultTimeout([]string{"history"}, HistoryCmd, "", "历史命令", nil)
+	RegisterCommandDefaultTimeout(root, []string{"quit"}, QuitCmd, "", "退出", nil)
+	RegisterCommandDefaultTimeout(root, []string{"history"}, HistoryCmd, "", "历史命令", nil)
 	_historyManager = NewHistoryManager(historyFilePath, false)
 
 	config := &readline.Config{
 		Prompt:       "\033[32m»\033[0m ", // 设置提示符
-		AutoComplete: NewCompleter(),      // 设置自动补全
+		AutoComplete: NewCompleter(root),  // 设置自动补全
 	}
 
 	rlIn, err := readline.NewEx(config)
@@ -379,13 +372,13 @@ func ReadLine() {
 			_historyManager.save()
 			break
 		}
-		ExecuteCommand(mgr, rlIn, cmd)
+		ExecuteCommand(root, mgr, rlIn, cmd)
 
 		if cmd != "history" && cmd != "help" {
 			_historyManager.add(cmd)
 		}
 
-		// ✅ 清空 readline 的历史缓存并重新加载去重后的历史
+		// 清空 readline 的历史缓存并重新加载去重后的历史
 		rlIn.ResetHistory()
 		for _, item := range _historyManager.Items {
 			rlIn.SaveHistory(item)

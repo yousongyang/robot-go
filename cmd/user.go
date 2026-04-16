@@ -12,14 +12,14 @@ import (
 )
 
 func init() {
-	utils.RegisterCommandDefaultTimeout([]string{"user", "show_all_login_user"}, func(action base.TaskActionImpl, cmd []string) string {
+	utils.RegisterCommandDefaultTimeout(MutableCommandRoot(), []string{"user", "show_all_login_user"}, func(action base.TaskActionImpl, cmd []string) string {
 		users := user_data.GetAllUsers()
 		for _, v := range users {
 			action.Log("%d", v.GetUserId())
 		}
 		return ""
 	}, "", "显示所有登录User", nil)
-	utils.RegisterCommandDefaultTimeout([]string{"user", "switch"}, func(action base.TaskActionImpl, cmd []string) string {
+	utils.RegisterCommandDefaultTimeout(MutableCommandRoot(), []string{"user", "switch"}, func(action base.TaskActionImpl, cmd []string) string {
 		if len(cmd) < 1 {
 			return "Need User Id"
 		}
@@ -111,19 +111,18 @@ type UserCommandNode struct {
 	Func     UserCommandFunc
 }
 
-var root *UserCommandNode
+var userCommandRoot *UserCommandNode
 
 func MutableUserCommandRoot() *UserCommandNode {
-	if root != nil {
-		return root
+	if userCommandRoot != nil {
+		return userCommandRoot
 	}
-	root = &UserCommandNode{Children: make(map[string]*UserCommandNode)}
-	return root
+	return &UserCommandNode{Children: make(map[string]*UserCommandNode)}
 }
 
 func RegisterUserCommand(path []string, fn UserCommandFunc, argsInfo string, desc string,
 	dynamicComplete readline.DynamicCompleteFunc) {
-	utils.RegisterCommandDefaultTimeout(path, func(action base.TaskActionImpl, cmd []string) string {
+	utils.RegisterCommandDefaultTimeout(MutableCommandRoot(), path, func(action base.TaskActionImpl, cmd []string) string {
 		user := GetCurrentUser()
 		if user == nil {
 			return "GetCurrentUser: User nil"
