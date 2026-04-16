@@ -35,10 +35,12 @@ type DBToolSession struct {
 
 // DBToolManager 管理单个 dbtool 会话（Master 启动时配置）
 type DBToolManager struct {
-	config      dbtool.DBToolConfig
-	masterRedis redis_interface.RedisClient // master 的 Redis，用于持久化预设
-	mu          sync.RWMutex
-	session     *DBToolSession
+	config        dbtool.DBToolConfig
+	masterRedis   redis_interface.RedisClient // master 的 Redis，用于持久化预设
+	mu            sync.RWMutex
+	session       *DBToolSession
+	lastReloadAt  time.Time
+	lastReloadErr string
 }
 
 // NewDBToolManager 创建 dbtool 管理器
@@ -57,23 +59,33 @@ func (dm *DBToolManager) Connect() error {
 	if dm.session != nil {
 		return nil // already connected
 	}
+	return dm.connectLocked()
+}
+
+// connectLocked 内部连接逻辑，调用前必须持有 dm.mu 写锁
+func (dm *DBToolManager) connectLocked() error {
+	dm.lastReloadAt = time.Now()
 
 	if dbtool.GetTableExtractor() == nil {
-		return fmt.Errorf("no TableExtractor registered")
+		dm.lastReloadErr = "no TableExtractor registered"
+		return fmt.Errorf("%s", dm.lastReloadErr)
 	}
 
 	// 加载 PB
 	registry := dbtool.NewRegistry(dbtool.GetTableExtractor())
 	if err := registry.LoadPBFile(dm.config.PBFile); err != nil {
+		dm.lastReloadErr = fmt.Sprintf("load pb file: %v", err)
 		return fmt.Errorf("load pb file: %w", err)
 	}
 	if len(registry.GetAllTables()) == 0 {
-		return fmt.Errorf("no tables found in pb file")
+		dm.lastReloadErr = "no tables found in pb file"
+		return fmt.Errorf("%s", dm.lastReloadErr)
 	}
 
 	// 连接 Redis
 	client, err := redis_interface.NewClient(dm.config.RedisConfig)
 	if err != nil {
+		dm.lastReloadErr = fmt.Sprintf("connect redis: %v", err)
 		return fmt.Errorf("connect redis: %w", err)
 	}
 
@@ -84,9 +96,55 @@ func (dm *DBToolManager) Connect() error {
 		registry: registry,
 		querier:  querier,
 	}
-
+	dm.lastReloadErr = ""
 	log.Printf("[DBTool] Connected (tables: %d)", len(registry.GetAllTables()))
 	return nil
+}
+
+// Reload 强制重新加载 .pb 文件并重连 Redis
+func (dm *DBToolManager) Reload() error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	// 关闭旧会话
+	if dm.session != nil && dm.session.client != nil {
+		dm.session.client.Close()
+	}
+	dm.session = nil
+
+	log.Printf("[DBTool] Reloading...")
+	return dm.connectLocked()
+}
+
+// StartAutoReload 启动定期自动 reload goroutine
+func (dm *DBToolManager) StartAutoReload(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	log.Printf("[DBTool] Auto-reload enabled, interval=%v", interval)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := dm.Reload(); err != nil {
+					log.Printf("[DBTool] Auto-reload failed: %v", err)
+				} else {
+					log.Printf("[DBTool] Auto-reload succeeded")
+				}
+			}
+		}
+	}()
+}
+
+// GetLastReloadInfo 返回上次 reload 时间和错误信息
+func (dm *DBToolManager) GetLastReloadInfo() (time.Time, string) {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	return dm.lastReloadAt, dm.lastReloadErr
 }
 
 // GetSession 获取活跃会话（未连接时返回 nil）

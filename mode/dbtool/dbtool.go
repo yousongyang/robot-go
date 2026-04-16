@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	host "github.com/atframework/atframe-utils-go/host"
 	redis_interface "github.com/atframework/robot-go/redis"
@@ -20,6 +21,7 @@ func RegisterFlags(flagSet *flag.FlagSet) {
 	flagSet.String("dbtool-record-prefix", "", "Redis key record prefix (overrides random-prefix)")
 	flagSet.String("dbtool-random-prefix", "", "use GetStableHostID as record prefix (true/false)")
 	flagSet.Int64("dbtool-redis-version", 0, "random-prefix version")
+	flagSet.Duration("dbtool-reload-interval", 5*time.Minute, "auto-reload interval for .pb file in Master mode (0=disabled, default 5m)")
 }
 
 var tableExtractor TableExtractor = nil
@@ -51,9 +53,10 @@ func ParseDBTOOLRedisConfig(flagSet *flag.FlagSet) redis_interface.Config {
 }
 
 type DBToolConfig struct {
-	PBFile       string                 `json:"pb_file"`
-	RecordPrefix string                 `json:"record_prefix"`
-	RedisConfig  redis_interface.Config `json:"redis_config"`
+	PBFile         string                 `json:"pb_file"`
+	RecordPrefix   string                 `json:"record_prefix"`
+	RedisConfig    redis_interface.Config `json:"redis_config"`
+	ReloadInterval time.Duration          `json:"reload_interval,omitempty"`
 }
 
 func LoadDBToolConfig(flagSet *flag.FlagSet) (DBToolConfig, error) {
@@ -79,10 +82,18 @@ func LoadDBToolConfig(flagSet *flag.FlagSet) (DBToolConfig, error) {
 	}
 	fmt.Printf("Record prefix: %s\n", recordPrefix)
 
+	var reloadInterval time.Duration
+	if f := flagSet.Lookup("dbtool-reload-interval"); f != nil {
+		if d, err := time.ParseDuration(f.Value.String()); err == nil {
+			reloadInterval = d
+		}
+	}
+
 	return DBToolConfig{
-		PBFile:       pbFile,
-		RecordPrefix: recordPrefix,
-		RedisConfig:  redisCfg,
+		PBFile:         pbFile,
+		RecordPrefix:   recordPrefix,
+		RedisConfig:    redisCfg,
+		ReloadInterval: reloadInterval,
 	}, nil
 }
 

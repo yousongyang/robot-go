@@ -68,6 +68,9 @@ type Master struct {
 
 	dbtoolMgr *DBToolManager
 	server    *http.Server
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewMaster 创建 Master 实例并连接 Redis
@@ -76,6 +79,7 @@ func NewMaster(cfg MasterConfig) (*Master, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Master{
 		cfg:            cfg,
 		redis:          client,
@@ -87,6 +91,8 @@ func NewMaster(cfg MasterConfig) (*Master, error) {
 		taskResults:    make(map[string]chan robot_case.AgentTaskResult),
 		taskCancels:    make(map[string]context.CancelFunc),
 		agentCancelChs: make(map[string]chan string),
+		ctx:            ctx,
+		cancel:         cancel,
 	}, nil
 }
 
@@ -164,6 +170,8 @@ func (m *Master) Start() error {
 	mux.HandleFunc("GET /api/dbtool/status", m.handleDBToolStatus)
 	mux.HandleFunc("GET /api/dbtool/tables", m.handleDBToolTables)
 	mux.HandleFunc("POST /api/dbtool/query", m.handleDBToolQuery)
+	mux.HandleFunc("POST /api/dbtool/reload", m.handleDBToolReload)
+	mux.HandleFunc("POST /api/dbtool/pb-upload", m.handleDBToolUploadPB)
 	mux.HandleFunc("GET /api/dbtool/presets", m.handleDBToolListPresets)
 	mux.HandleFunc("POST /api/dbtool/presets", m.handleDBToolSavePreset)
 	mux.HandleFunc("DELETE /api/dbtool/presets/{name}", m.handleDBToolDeletePreset)
@@ -176,7 +184,10 @@ func (m *Master) Start() error {
 	if m.dbtoolMgr != nil {
 		if err := m.dbtoolMgr.Connect(); err != nil {
 			log.Printf("[Master] DBTool connect failed: %v", err)
-			m.dbtoolMgr = nil
+			// 保留 dbtoolMgr，高层会展示错误信息并提供 Reload 按鈕
+		}
+		if m.dbtoolMgr.config.ReloadInterval > 0 {
+			m.dbtoolMgr.StartAutoReload(m.ctx, m.dbtoolMgr.config.ReloadInterval)
 		}
 	}
 	if m.cfg.ReportExpiry > 0 {
@@ -190,6 +201,7 @@ func (m *Master) Start() error {
 
 // Stop 优雅停机
 func (m *Master) Stop() error {
+	m.cancel() // 取消内部 context，停止定期 reload goroutine
 	if m.dbtoolMgr != nil {
 		m.dbtoolMgr.Close()
 	}

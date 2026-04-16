@@ -389,15 +389,37 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
 
 <!-- Not enabled / loading state -->
 <div id="dbt-disabled" style="display:none;padding:64px;text-align:center">
-  <h2 style="color:var(--muted);font-size:20px">DBTool Not Enabled</h2>
-  <p style="color:var(--muted);margin-top:8px">No TableExtractor registered. Call <code>RegisterDatabaseTableExtractor</code> and setup DBTOOL config before Start().</p>
+  <h2 id="dbt-disabled-title" style="font-size:20px;color:var(--muted)">DBTool Not Enabled</h2>
+  <p id="dbt-disabled-msg" style="color:var(--muted);margin-top:8px"></p>
+  <div style="display:flex;gap:8px;justify-content:center;margin-top:16px">
+    <button id="dbt-reload-btn-disabled" class="btn btn-primary" style="display:none" onclick="dbtReload()">&#x21BA; Reload DBTool</button>
+    <button id="dbt-upload-btn-disabled" class="btn btn-secondary" style="display:none" onclick="dbtShowUpload()">&#x2191; Upload .pb File</button>
+  </div>
+</div>
+
+<!-- Upload .pb panel (shared, shown/hidden via JS) -->
+<div id="dbt-upload-panel" class="form-card" style="display:none;margin-bottom:16px;padding:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h3 style="margin:0">&#x2191; Upload .pb File</h3>
+    <button class="btn btn-secondary btn-sm" onclick="dbtHideUpload()">&#x2715; Close</button>
+  </div>
+  <p style="font-size:13px;color:var(--muted);margin-bottom:12px">上传新的 FileDescriptorSet <code>.pb</code> 文件，将覆盖 Master 当前读取的路径并自动触发 Reload。</p>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input type="file" id="dbt-pb-file-input" accept=".pb" style="flex:1;min-width:200px">
+    <button class="btn btn-primary" onclick="dbtUploadPB()" id="dbt-upload-submit">Upload &amp; Reload</button>
+  </div>
+  <div id="dbt-upload-status" style="margin-top:10px;font-size:13px"></div>
 </div>
 
 <!-- Connected: table browser & query -->
 <div id="dbt-session-panel" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <h2 style="font-size:18px">&#x1F50D; Database Inspector</h2>
-    <button class="btn btn-secondary btn-sm" onclick="dbtRefreshTables()">&#x21BB; Refresh</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="dbtRefreshTables()">&#x21BB; Refresh Tables</button>
+      <button class="btn btn-secondary btn-sm" onclick="dbtShowUpload()">&#x2191; Upload .pb</button>
+      <button class="btn btn-primary btn-sm" onclick="dbtReload()">&#x21BA; Reload DBTool</button>
+    </div>
   </div>
 
   <!-- Config info bar -->
@@ -1101,28 +1123,110 @@ async function dbtInit() {
   try {
     const status = await api('GET', '/api/dbtool/status');
     if (!status.enabled) {
+      document.getElementById('dbt-disabled-title').style.color = 'var(--muted)';
+      document.getElementById('dbt-disabled-title').textContent = 'DBTool Not Enabled';
+      document.getElementById('dbt-disabled-msg').innerHTML =
+        'Start Master with <code>--dbtool-pb-file</code> flag to enable DBTool.';
+      document.getElementById('dbt-reload-btn-disabled').style.display = 'none';
       document.getElementById('dbt-disabled').style.display = '';
       return;
     }
     if (!status.connected) {
+      const errMsg = status.last_reload_error || 'Unknown error. Check server logs.';
+      document.getElementById('dbt-disabled-title').style.color = 'var(--danger)';
+      document.getElementById('dbt-disabled-title').textContent = 'DBTool Connection Failed';
+      document.getElementById('dbt-disabled-msg').innerHTML =
+        '<span style="color:var(--danger)">' + escapeHtml(errMsg) + '</span>';
+      document.getElementById('dbt-reload-btn-disabled').style.display = '';
+      document.getElementById('dbt-upload-btn-disabled').style.display = '';
       document.getElementById('dbt-disabled').style.display = '';
-      document.getElementById('dbt-disabled').innerHTML =
-        '<h2 style="color:var(--danger);font-size:20px">DBTool Connection Failed</h2>' +
-        '<p style="color:var(--muted);margin-top:8px">Extractor registered but session not connected. Check server logs.</p>';
       return;
     }
     // Show config info
     const cfg = status.config || {};
-    document.getElementById('dbt-config-info').innerHTML =
+    const redisCfg = cfg.redis_config || {};
+    let configHtml =
       '<strong>PB File:</strong> ' + escapeHtml(cfg.pb_file || '') +
-      ' &nbsp;|&nbsp; <strong>Redis:</strong> ' + escapeHtml((cfg.redis_addrs || []).join(', ')) +
-      (cfg.cluster_mode ? ' <span class="badge running">cluster</span>' : '') +
+      ' &nbsp;|&nbsp; <strong>Redis:</strong> ' + escapeHtml((redisCfg.addrs || []).join(', ')) +
+      (redisCfg.cluster_mode ? ' <span class="badge running">cluster</span>' : '') +
       ' &nbsp;|&nbsp; <strong>Prefix:</strong> ' + escapeHtml(cfg.record_prefix || '');
+    if (status.last_reload_at) {
+      configHtml += ' &nbsp;|&nbsp; <strong>Last Reload:</strong> ' + escapeHtml(status.last_reload_at);
+    }
+    document.getElementById('dbt-config-info').innerHTML = configHtml;
     dbtTablesData = status.tables || [];
     document.getElementById('dbt-session-panel').style.display = '';
     dbtRenderTables();
     dbtLoadPresets();
   } catch (e) { toast('DBTool status check failed: ' + e.message, 'error'); }
+}
+
+async function dbtReload() {
+  try {
+    const res = await api('POST', '/api/dbtool/reload');
+    if (res.ok) {
+      toast('DBTool reloaded (' + (res.tables || []).length + ' tables)', 'success');
+    } else {
+      toast('Reload failed: ' + (res.error || 'unknown error'), 'error');
+    }
+  } catch (e) {
+    toast('Reload failed: ' + e.message, 'error');
+  }
+  await dbtInit();
+}
+
+function dbtShowUpload() {
+  document.getElementById('dbt-upload-panel').style.display = '';
+  document.getElementById('dbt-upload-status').textContent = '';
+  document.getElementById('dbt-pb-file-input').value = '';
+  document.getElementById('dbt-upload-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function dbtHideUpload() {
+  document.getElementById('dbt-upload-panel').style.display = 'none';
+}
+
+async function dbtUploadPB() {
+  const input = document.getElementById('dbt-pb-file-input');
+  const statusEl = document.getElementById('dbt-upload-status');
+  const submitBtn = document.getElementById('dbt-upload-submit');
+  if (!input.files || input.files.length === 0) {
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = 'Please select a .pb file first.';
+    return;
+  }
+  const file = input.files[0];
+  if (!file.name.toLowerCase().endsWith('.pb')) {
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = 'Only .pb files are allowed.';
+    return;
+  }
+  const formData = new FormData();
+  formData.append('pb_file', file);
+  submitBtn.disabled = true;
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = 'Uploading...';
+  try {
+    const resp = await fetch('/api/dbtool/pb-upload', { method: 'POST', body: formData });
+    const res = await resp.json();
+    if (res.ok) {
+      statusEl.style.color = 'var(--success, green)';
+      statusEl.textContent = '\u2713 Uploaded & reloaded (' + res.table_count + ' tables, ' + res.written + ' bytes saved to ' + res.dest + ')';
+      dbtHideUpload();
+      await dbtInit();
+    } else {
+      statusEl.style.color = 'var(--danger)';
+      statusEl.textContent = '\u2717 ' + (res.error || 'Upload failed');
+      if (res.saved) {
+        statusEl.textContent += ' (file saved, but reload failed \u2014 try Reload DBTool)';
+      }
+    }
+  } catch (e) {
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = '\u2717 ' + e.message;
+  } finally {
+    submitBtn.disabled = false;
+  }
 }
 
 function dbtRenderTables() {
