@@ -191,6 +191,22 @@ func (user *User) RunTask(timeout time.Duration, f func(*user_data.TaskActionUse
 	return task
 }
 
+func (user *User) RunTaskWithoutLock(timeout time.Duration, f func(*user_data.TaskActionUserNoneLock) error, name string) *user_data.TaskActionUserNoneLock {
+	if user == nil {
+		user.Log("User nil")
+		return nil
+	}
+	task := &user_data.TaskActionUserNoneLock{
+		TaskActionBase: *base.NewTaskActionBase(timeout, name),
+		User:           user,
+		Fn:             f,
+	}
+	task.TaskActionBase.Impl = task
+
+	user.taskManager.RunTaskAction(task)
+	return task
+}
+
 func (user *User) RunTaskDefaultTimeout(f func(*user_data.TaskActionUser) error, name string) *user_data.TaskActionUser {
 	return user.RunTask(time.Duration(8)*time.Second, f, name)
 }
@@ -304,12 +320,12 @@ func (user *User) ReceiveHandler(unpack user_data.UserReceiveUnpackFunc, createM
 }
 
 func (user *User) AwaitReceiveHandlerClose(task base.TaskActionImpl) error {
-	err := user.ReleaseActionGuard(task)
+	err := task.BeforeYield()
 	if err != nil {
 		return err
 	}
 	<-user.receiveHandlerCloseChan
-	return user.TakeActionGuard(task)
+	return task.AfterYield()
 }
 
 func (user *User) InitHeartbeatFunc(f func(user_data.User) error) {

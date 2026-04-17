@@ -10,8 +10,15 @@ type TaskActionUser struct {
 	Fn   func(*TaskActionUser) error
 }
 
+type TaskActionUserNoneLock struct {
+	base.TaskActionBase
+	User User
+	Fn   func(*TaskActionUserNoneLock) error
+}
+
 func init() {
 	var _ base.TaskActionImpl = &TaskActionUser{}
+	var _ base.TaskActionImpl = &TaskActionUserNoneLock{}
 }
 
 func (t *TaskActionUser) IsTakenActionGuard() bool {
@@ -40,5 +47,13 @@ func (t *TaskActionUser) HookRun() error {
 }
 
 func (t *TaskActionUser) Log(format string, a ...any) {
+	t.User.Log(format, a...)
+}
+
+func (t *TaskActionUserNoneLock) HookRun() error {
+	return t.Fn(t)
+}
+
+func (t *TaskActionUserNoneLock) Log(format string, a ...any) {
 	t.User.Log(format, a...)
 }
