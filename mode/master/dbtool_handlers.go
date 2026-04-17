@@ -67,17 +67,18 @@ func (m *Master) handleDBToolQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Table     string   `json:"table"`
-		Index     string   `json:"index"`
-		KeyValues []string `json:"key_values"`
-		ExtraArgs []string `json:"extra_args,omitempty"`
+		Table        string   `json:"table"`
+		Index        string   `json:"index"`
+		KeyValues    []string `json:"key_values"`
+		ExtraArgs    []string `json:"extra_args,omitempty"`
+		RecordPrefix string   `json:"record_prefix,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	result, err := session.ExecuteQuery(req.Table, req.Index, req.KeyValues, req.ExtraArgs)
+	result, err := session.ExecuteQuery(req.Table, req.Index, req.KeyValues, req.ExtraArgs, req.RecordPrefix)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"error":  err.Error(),

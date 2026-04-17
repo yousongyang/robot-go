@@ -425,6 +425,13 @@ border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px}
   <!-- Config info bar -->
   <div class="form-card" id="dbt-config-info" style="padding:12px 16px;margin-bottom:16px;font-size:13px"></div>
 
+  <!-- Prefix override -->
+  <div class="form-card" style="padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:13px">
+    <label for="dbt-prefix-override" style="white-space:nowrap;color:var(--muted)"><strong>Prefix Override:</strong></label>
+    <input id="dbt-prefix-override" placeholder="留空则使用启动配置的 Prefix" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px">
+    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('dbt-prefix-override').value='';toast('已重置为默认 Prefix','info')">Reset</button>
+  </div>
+
   <!-- Presets section -->
   <div class="table-wrap" style="margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1355,11 +1362,13 @@ async function dbtExecuteQuery() {
   resultEl.textContent = 'Querying...';
 
   try {
+    const prefixOverride = (document.getElementById('dbt-prefix-override') || {}).value || '';
     const res = await api('POST', '/api/dbtool/query', {
       table: dbtQueryCtx.table,
       index: dbtQueryCtx.index,
       key_values: keyValues,
-      extra_args: extraArgs.length > 0 ? extraArgs : undefined
+      extra_args: extraArgs.length > 0 ? extraArgs : undefined,
+      record_prefix: prefixOverride || undefined
     });
     if (res.error) {
       resultEl.textContent = 'Error: ' + res.error;

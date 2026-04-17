@@ -269,8 +269,8 @@ func (s *DBToolSession) ListTables() []DBToolTableSummary {
 	return result
 }
 
-// ExecuteQuery 执行查询
-func (s *DBToolSession) ExecuteQuery(tableName, indexName string, keyValues []string, extraArgs []string) (string, error) {
+// ExecuteQuery 执行查询。prefixOverride 非空时临时替换 recordPrefix（不影响其他查询）。
+func (s *DBToolSession) ExecuteQuery(tableName, indexName string, keyValues []string, extraArgs []string, prefixOverride string) (string, error) {
 	info := s.registry.FindTableByShortName(tableName)
 	if info == nil {
 		return "", fmt.Errorf("unknown table: %s", tableName)
@@ -292,31 +292,37 @@ func (s *DBToolSession) ExecuteQuery(tableName, indexName string, keyValues []st
 			index.Name, len(index.KeyFields), joinStr(index.KeyFields, ", "), len(keyValues))
 	}
 
+	// 如果指定了 prefixOverride，使用临时 Querier
+	q := s.querier
+	if prefixOverride != "" {
+		q = dbtool.NewQuerier(s.client, s.registry, prefixOverride)
+	}
+
 	switch index.Type {
 	case dbtool.IndexTypeKV:
-		return s.querier.QueryKV(info, index, keyValues)
+		return q.QueryKV(info, index, keyValues)
 	case dbtool.IndexTypeKL:
 		listIndex := int64(-1)
 		if len(extraArgs) > 0 {
 			fmt.Sscanf(extraArgs[0], "%d", &listIndex)
 		}
-		return s.querier.QueryKL(info, index, keyValues, listIndex)
+		return q.QueryKL(info, index, keyValues, listIndex)
 	case dbtool.IndexTypeSortedSet:
-		return s.executeSortedSetQuery(index, keyValues, extraArgs)
+		return s.executeSortedSetQuery(q, index, keyValues, extraArgs)
 	default:
 		return "", fmt.Errorf("unsupported index type: %s", index.Type)
 	}
 }
 
-func (s *DBToolSession) executeSortedSetQuery(index *dbtool.TableIndex, keyValues []string, extraArgs []string) (string, error) {
+func (s *DBToolSession) executeSortedSetQuery(q *dbtool.Querier, index *dbtool.TableIndex, keyValues []string, extraArgs []string) (string, error) {
 	if len(extraArgs) == 0 {
-		return s.querier.QuerySortedSetCount(index, keyValues)
+		return q.QuerySortedSetCount(index, keyValues)
 	}
 
 	subCmd := extraArgs[0]
 	switch subCmd {
 	case "count":
-		return s.querier.QuerySortedSetCount(index, keyValues)
+		return q.QuerySortedSetCount(index, keyValues)
 	case "rank", "rrank":
 		if len(extraArgs) < 3 {
 			return "", fmt.Errorf("usage: %s <start> <stop>", subCmd)
@@ -324,7 +330,7 @@ func (s *DBToolSession) executeSortedSetQuery(index *dbtool.TableIndex, keyValue
 		var start, stop int64
 		fmt.Sscanf(extraArgs[1], "%d", &start)
 		fmt.Sscanf(extraArgs[2], "%d", &stop)
-		return s.querier.QuerySortedSetByRank(index, keyValues, start, stop, subCmd == "rrank")
+		return q.QuerySortedSetByRank(index, keyValues, start, stop, subCmd == "rrank")
 	case "score", "rscore":
 		if len(extraArgs) < 3 {
 			return "", fmt.Errorf("usage: %s <min> <max> [offset] [count]", subCmd)
@@ -339,7 +345,7 @@ func (s *DBToolSession) executeSortedSetQuery(index *dbtool.TableIndex, keyValue
 		if len(extraArgs) > 4 {
 			fmt.Sscanf(extraArgs[4], "%d", &count)
 		}
-		return s.querier.QuerySortedSetByScore(index, keyValues, min, max, offset, count, subCmd == "rscore")
+		return q.QuerySortedSetByScore(index, keyValues, min, max, offset, count, subCmd == "rscore")
 	default:
 		return "", fmt.Errorf("unknown sorted set subcommand: %s (available: count, rank, rrank, score, rscore)", subCmd)
 	}
