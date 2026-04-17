@@ -7,6 +7,7 @@ require (
 	github.com/chzyer/readline v1.5.1
 	github.com/golang/snappy v0.0.4
 	github.com/google/flatbuffers v25.12.19+incompatible
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.17.10
 	github.com/panjf2000/ants/v2 v2.12.0
