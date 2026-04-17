@@ -44,6 +44,8 @@ type User interface {
 
 	RunTask(timeout time.Duration, f func(*TaskActionUser) error, name string) *TaskActionUser
 	RunTaskDefaultTimeout(f func(*TaskActionUser) error, name string) *TaskActionUser
+	RunTaskWithoutLock(timeout time.Duration, f func(*TaskActionUserNoneLock) error, name string)
+
 	AddOnClosedHandler(f func(User))
 	Log(format string, a ...any)
 	InitHeartbeatFunc(func(User) error)
