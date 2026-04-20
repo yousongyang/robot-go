@@ -103,9 +103,9 @@ func CreateDefaultUserLogHandler(openId string) func(format string, a ...any) {
 }
 
 type UserHolder struct {
-	user        *lu.AtomicInterface[User]
-	OpenId      string
-	PrivateData any
+	user   *lu.AtomicInterface[User]
+	OpenId string
+	Index  atomic.Int32
 }
 
 func (h *UserHolder) InitUser(u User) {

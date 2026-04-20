@@ -292,10 +292,7 @@ func RunCaseInner(
 		userCaseDatas[i].totalTaskCount = runTime
 
 		userHolder := user_data.UserContainerGetUser(userCaseDatas[i].openId)
-		ud := &userPrivateData{
-			index: int32(i),
-		}
-		userHolder.PrivateData = ud
+		userHolder.Index.Store(int32(i))
 		// 先放入1次任务
 		workerDatas[workerIndex].userHolderChannel <- userHolder
 		userCaseDatas[i].dispatchTaskCount.Add(1)
@@ -343,7 +340,7 @@ func RunCaseInner(
 			}
 
 			onFinishFunc := func(task base.TaskActionImpl, err error) {
-				caseData := userCaseDatas[task.(*TaskActionCase).UserHolder.PrivateData.(*userPrivateData).index]
+				caseData := userCaseDatas[task.(*TaskActionCase).UserHolder.Index.Load()]
 				// 先增加已完成的任务数，再决定是否继续分配任务，避免竞争
 				finishTaskCount := caseData.dispatchTaskCount.Add(1)
 				if finishTaskCount <= caseData.totalTaskCount {
