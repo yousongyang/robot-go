@@ -174,9 +174,6 @@ func RegisterCommandDefaultTimeout(root *CommandNode, path []string, fn CommandF
 func FindCommand(root *CommandNode, path string) (args []string, node *CommandNode) {
 	node = root
 	args, _ = shlex.Split(path)
-	for _, item := range args {
-		fmt.Println(item)
-	}
 	for {
 		if len(node.Children) == 0 {
 			break
