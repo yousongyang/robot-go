@@ -29,7 +29,7 @@ type User struct {
 	Logined           bool
 	HasGetInfo        bool
 	HeartbeatInterval time.Duration
-	LastPingTime      time.Time
+	LastPingTime      atomic.Int64
 	Closed            atomic.Bool
 
 	connectionSequence uint64
@@ -338,7 +338,7 @@ func (user *User) InitHeartbeatFunc(f func(user_data.User) error) {
 	if !user.IsLogin() {
 		return
 	}
-	if user.LastPingTime.Add(user.HeartbeatInterval).Before(time.Now()) {
+	if time.Now().Unix() > (user.LastPingTime.Load() + int64(user.HeartbeatInterval.Seconds())) {
 		err := f(user)
 		if err != nil {
 			user.Log("Heartbeat error stop check")
@@ -407,6 +407,7 @@ func (user *User) SendReq(action base.TaskActionImpl, csMsg proto.Message,
 		}
 		return 0, nil, err
 	}
+	user.SetLastPingTime(time.Now())
 
 	if needRsp {
 		resumeData := action.Yield()
@@ -505,7 +506,7 @@ func (user *User) SetLastPingTime(d time.Time) {
 	if user == nil {
 		return
 	}
-	user.LastPingTime = d
+	user.LastPingTime.Store(d.Unix())
 }
 
 func (user *User) SetHasGetInfo(d bool) {

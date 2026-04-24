@@ -328,11 +328,5 @@ func ReadLine(root *CommandNode) {
 		if cmd != "history" && cmd != "help" {
 			_historyManager.add(cmd)
 		}
-
-		// 清空 readline 的历史缓存并重新加载去重后的历史
-		rlIn.ResetHistory()
-		for _, item := range _historyManager.Items {
-			rlIn.SaveHistory(item)
-		}
 	}
 }
